@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"sync"
 
 	"github.com/litesql/go-ha"
 	"github.com/litesql/sqlite"
@@ -15,7 +16,9 @@ func init() {
 }
 
 type Driver struct {
-	Options []ha.Option
+	once           sync.Once
+	ConnectionHook sqlite.ConnectionHookFn
+	Options        []ha.Option
 }
 
 func (d *Driver) Open(name string) (driver.Conn, error) {
@@ -33,6 +36,11 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	}
 	opts = append(opts, d.Options...)
 	var drv sqlite.Driver
+	d.once.Do(func() {
+		if d.ConnectionHook != nil {
+			drv.RegisterConnectionHook(d.ConnectionHook)
+		}
+	})
 	return ha.NewConnector(dsn, &drv, func(nodeName, filename string, disableDDLSync bool, publisher ha.CDCPublisher) ha.ConnHooksProvider {
 		return newConnHooksProvider(nodeName, filename, disableDDLSync, publisher)
 	}, Backup, opts...)
