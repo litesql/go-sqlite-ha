@@ -167,6 +167,7 @@ func enableCDCHooks(sconn SQLiteConn, nodeName, filename string, publisher ha.CD
 type SQLiteConn interface {
 	driver.Conn
 	sqlite.ExecQuerierContext
+	sqlite.HookRegisterer
 	NewBackup(string) (*sqlite.Backup, error)
 }
 
