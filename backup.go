@@ -20,7 +20,22 @@ func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
 		return err
 	}
 
-	// TODO serialize memdb
+	var filename string
+	err = srcConn.QueryRowContext(ctx, "SELECT file FROM pragma_database_list WHERE name = ?", "main").Scan(&filename)
+	if err != nil {
+		return err
+	}
+
+	if filename == "" {
+		// serialize memdb
+		data, err := sqliteSrcConn.Serialize()
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(data)
+		return err
+	}
+
 	dest, err := os.CreateTemp("", "ha-*.db")
 	if err != nil {
 		return err

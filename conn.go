@@ -169,6 +169,7 @@ type SQLiteConn interface {
 	sqlite.ExecQuerierContext
 	sqlite.HookRegisterer
 	NewBackup(string) (*sqlite.Backup, error)
+	Serialize() ([]byte, error)
 }
 
 func sqliteConn(conn *sql.Conn) (SQLiteConn, error) {
