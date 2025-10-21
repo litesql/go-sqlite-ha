@@ -22,7 +22,7 @@ type Conn struct {
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	stmts, errParse := ha.Parse(context.Background(), query)
+	stmts, errParse := ha.Parse(ctx, query)
 	if errParse != nil {
 		return nil, errParse
 	}
