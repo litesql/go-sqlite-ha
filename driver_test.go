@@ -47,11 +47,20 @@ func TestConnector(t *testing.T) {
 }
 
 type fakePublisher struct {
-	err     error
-	changes []ha.Change
+	err      error
+	changes  []ha.Change
+	sequence uint64
 }
 
 func (f *fakePublisher) Publish(cs *ha.ChangeSet) error {
 	f.changes = cs.Changes
 	return f.err
+}
+
+func (f *fakePublisher) SetSequence(s uint64) {
+	f.sequence = s
+}
+
+func (f *fakePublisher) Sequence() uint64 {
+	return f.sequence
 }
