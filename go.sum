@@ -14,10 +14,10 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/klauspost/compress v1.18.1 h1:bcSGx7UbpBqMChDtsF28Lw6v/G94LPrrbMbdC3JH2co=
 github.com/klauspost/compress v1.18.1/go.mod h1:ZQFFVG+MdnR0P+l6wpXgIL4NTtwiKIdBnrBd8Nrxr+0=
-github.com/litesql/go-ha v0.0.22 h1:0GiHrt9dHB6Nj6GKSncJEp9g+bTNHBDb+e1iuhV1VKg=
-github.com/litesql/go-ha v0.0.22/go.mod h1:j1156oH18UVKbQuyWoenIDokTAjTP1JUVFJViQKRaoM=
-github.com/litesql/sqlite v1.39.6 h1:n4HsEUxxEGw5b9JRtHt27cveB87NsghxETgYiViMnY4=
-github.com/litesql/sqlite v1.39.6/go.mod h1:xf1r4wb4d1zRoD0ax7N8kYbG12xlhpDO157UGJfHQTU=
+github.com/litesql/go-ha v0.0.23 h1:Ky4KsSYircArcJFVq85msVgmtILDNW/BsHTbS+btzK4=
+github.com/litesql/go-ha v0.0.23/go.mod h1:j1156oH18UVKbQuyWoenIDokTAjTP1JUVFJViQKRaoM=
+github.com/litesql/sqlite v1.39.7 h1:0j94jUGhQRj1ch0r/443X1XboRu3rQoyiW6DrD54RjE=
+github.com/litesql/sqlite v1.39.7/go.mod h1:xf1r4wb4d1zRoD0ax7N8kYbG12xlhpDO157UGJfHQTU=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/minio/highwayhash v1.0.3 h1:kbnuUMoHYyVl7szWjSxJnxw11k2U709jqFPPmIUyD6Q=
