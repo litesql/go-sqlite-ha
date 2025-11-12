@@ -56,3 +56,7 @@ func (f *fakePublisher) Publish(cs *ha.ChangeSet) error {
 	f.changes = cs.Changes
 	return f.err
 }
+
+func (f *fakePublisher) Sequence() uint64 {
+	return f.sequence
+}
