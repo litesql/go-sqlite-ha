@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/litesql/go-ha"
-	"github.com/litesql/sqlite"
+	"modernc.org/sqlite"
 )
 
 func init() {
