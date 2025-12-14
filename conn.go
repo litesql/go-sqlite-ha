@@ -21,6 +21,10 @@ type Conn struct {
 	disableDDLSync bool
 }
 
+func (c *Conn) Deserialize(b []byte, _ string) error {
+	return c.SQLiteConn.Deserialize(b)
+}
+
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	stmts, errParse := ha.Parse(ctx, query)
 	if errParse != nil {
@@ -175,6 +179,7 @@ type SQLiteConn interface {
 	sqlite.HookRegisterer
 	NewBackup(string) (*sqlite.Backup, error)
 	Serialize() ([]byte, error)
+	Deserialize([]byte) error
 }
 
 type rawer interface {
