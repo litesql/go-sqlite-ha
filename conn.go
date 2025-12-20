@@ -58,15 +58,17 @@ type connHooksProvider struct {
 	nodeName       string
 	filename       string
 	disableDDLSync bool
-	publisher      ha.CDCPublisher
+	publisher      ha.Publisher
+	cdcPublisher   ha.CDCPublisher
 }
 
-func newConnHooksProvider(nodeName string, filename string, disableDDLSync bool, publisher ha.CDCPublisher) *connHooksProvider {
+func newConnHooksProvider(nodeName string, filename string, disableDDLSync bool, publisher ha.Publisher, cdcPublisher ha.CDCPublisher) *connHooksProvider {
 	return &connHooksProvider{
 		nodeName:       nodeName,
 		filename:       filename,
 		disableDDLSync: disableDDLSync,
 		publisher:      publisher,
+		cdcPublisher:   cdcPublisher,
 	}
 }
 
@@ -78,7 +80,7 @@ type ConnHooksRegister interface {
 
 func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
 	sqliteConn, _ := c.(SQLiteConn)
-	enableCDCHooks(sqliteConn, p.nodeName, p.filename, p.publisher)
+	enableCDCHooks(sqliteConn, p.nodeName, p.filename, p.publisher, p.cdcPublisher)
 	return &Conn{
 		SQLiteConn:     sqliteConn,
 		disableDDLSync: p.disableDDLSync,
@@ -101,11 +103,11 @@ func (p *connHooksProvider) EnableHooks(conn *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	enableCDCHooks(sconn, p.nodeName, p.filename, p.publisher)
+	enableCDCHooks(sconn, p.nodeName, p.filename, p.publisher, p.cdcPublisher)
 	return nil
 }
 
-func enableCDCHooks(sconn SQLiteConn, nodeName, filename string, publisher ha.CDCPublisher) {
+func enableCDCHooks(sconn SQLiteConn, nodeName, filename string, publisher ha.Publisher, cdc ha.CDCPublisher) {
 	changeSetSessionsMu.Lock()
 	defer changeSetSessionsMu.Unlock()
 
@@ -165,6 +167,15 @@ func enableCDCHooks(sconn SQLiteConn, nodeName, filename string, publisher ha.CD
 		if err := cs.Send(publisher); err != nil {
 			slog.Error("failed to send changeset", "error", err)
 			return 1
+		}
+		if cdc != nil {
+			data := cs.DebeziumData()
+			if len(data) > 0 {
+				if err := cdc.Publish(data); err != nil {
+					slog.Error("failed to send cdc", "error", err)
+					return 1
+				}
+			}
 		}
 		return 0
 	})
