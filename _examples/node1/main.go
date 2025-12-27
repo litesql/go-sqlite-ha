@@ -15,6 +15,7 @@ import (
 func main() {
 	c, err := sqliteha.NewConnector("file:_examples/node1/my.db?_journal=WAL&_timeout=5000",
 		ha.WithName("node1"),
+		ha.WithMySQLPort(3306),
 		ha.WithEmbeddedNatsConfig(&ha.EmbeddedNatsConfig{
 			Port: 4222,
 		}))
