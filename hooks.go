@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/litesql/go-ha"
 	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
@@ -17,22 +18,26 @@ import (
 )
 
 type connHooksProvider struct {
-	nodeName       string
-	replicationID  string
-	disableDDLSync bool
-	publisher      ha.Publisher
-	cdcPublisher   ha.CDCPublisher
-	leader         ha.LeaderProvider
+	nodeName             string
+	replicationID        string
+	disableDDLSync       bool
+	publisher            ha.Publisher
+	cdcPublisher         ha.CDCPublisher
+	leader               ha.LeaderProvider
+	txseqTrackerProvider ha.TxSeqTrackerProvider
+	grpcTimeout          time.Duration
 }
 
 func newConnHooksProvider(cfg ha.ConnHooksConfig) *connHooksProvider {
 	return &connHooksProvider{
-		nodeName:       cfg.NodeName,
-		replicationID:  cfg.ReplicationID,
-		disableDDLSync: cfg.DisableDDLSync,
-		publisher:      cfg.Publisher,
-		cdcPublisher:   cfg.CDC,
-		leader:         cfg.Leader,
+		nodeName:             cfg.NodeName,
+		replicationID:        cfg.ReplicationID,
+		disableDDLSync:       cfg.DisableDDLSync,
+		publisher:            cfg.Publisher,
+		cdcPublisher:         cfg.CDC,
+		txseqTrackerProvider: cfg.TxSeqTrackerProvider,
+		leader:               cfg.Leader,
+		grpcTimeout:          cfg.GrpcTimeout,
 	}
 }
 
@@ -53,6 +58,8 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
 		leader:         p.leader,
 		reqCh:          make(chan *sqlv1.QueryRequest),
 		resCh:          make(chan *sqlv1.QueryResponse),
+		txseqTracker:   p.txseqTrackerProvider(),
+		timeout:        p.grpcTimeout,
 	}
 	return conn, conn.start()
 }

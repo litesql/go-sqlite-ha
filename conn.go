@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/litesql/go-ha"
 	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
@@ -16,6 +17,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+var ErrTimedOut = errors.New("Timed out")
 
 type Conn struct {
 	SQLiteConn
@@ -33,6 +36,9 @@ type Conn struct {
 	txseq uint64
 
 	activeTransaction bool
+
+	txseqTracker ha.TxSeqTracker
+	timeout      time.Duration
 }
 
 func (c *Conn) Deserialize(b []byte, _ string) error {
@@ -67,23 +73,30 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 				Value:   val,
 			}
 		}
-		c.reqCh <- &sqlv1.QueryRequest{
+		ctx, cancel := context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+
+		select {
+		case c.reqCh <- &sqlv1.QueryRequest{
 			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
 			Sql:           query,
 			Params:        params,
 			ReplicationId: c.replicationID,
+		}:
+			res := <-c.resCh
+			if res.Error != "" {
+				return nil, errors.New(res.Error)
+			}
+			if res.Txseq > 0 {
+				c.txseq = res.Txseq
+			}
+			return result{
+				lastInsertId: res.LastInsertId,
+				rowsAffected: res.RowsAffected,
+			}, nil
+		case <-ctx.Done():
+			return nil, ErrTimedOut
 		}
-		res := <-c.resCh
-		if res.Error != "" {
-			return nil, errors.New(res.Error)
-		}
-		if res.Txseq > 0 {
-			c.txseq = res.Txseq
-		}
-		return result{
-			lastInsertId: res.LastInsertId,
-			rowsAffected: res.RowsAffected,
-		}, nil
 	}
 
 	var ddlCommands strings.Builder
@@ -112,6 +125,12 @@ func (c *Conn) Exec(query string, args []driver.Value) (driver.Result, error) {
 
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	slog.Debug("QuerContext", "query", query, "enableRedirect", c.enableRedirect)
+	if c.leader.IsLeader() {
+		return c.SQLiteConn.QueryContext(ctx, query, args)
+	}
+	if query == "SELECT received_seq FROM ha_stats WHERE subject = ?" {
+		return c.SQLiteConn.QueryContext(ctx, query, args)
+	}
 	stmts, errParse := ha.Parse(ctx, query)
 	if errParse != nil {
 		return nil, errParse
@@ -124,36 +143,26 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 			break
 		}
 	}
-	if (modifies || c.activeTransaction) && c.enableRedirect && !c.leader.IsLeader() {
-		slog.Debug("Redirecting query", "to", c.leader.RedirectTarget())
-		params := make([]*sqlv1.NamedValue, len(args))
-		for i, arg := range args {
-			val, err := hagrpc.ToAnypb(arg.Value)
-			if err != nil {
-				return nil, err
-			}
-			params[i] = &sqlv1.NamedValue{
-				Name:    arg.Name,
-				Ordinal: int64(arg.Ordinal),
-				Value:   val,
-			}
+	if (modifies || c.activeTransaction) && c.enableRedirect {
+		return c.redirectQuery(ctx, query, args)
+	}
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	ctxTimeout, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+LOOP:
+	for {
+		if c.txseqTracker.LatestSeq() >= c.txseq {
+			break LOOP
 		}
-		c.reqCh <- &sqlv1.QueryRequest{
-			Type:          sqlv1.QueryType_QUERY_TYPE_UNSPECIFIED,
-			Sql:           query,
-			Params:        params,
-			ReplicationId: c.replicationID,
+
+		select {
+		case <-ctxTimeout.Done():
+			return c.redirectQuery(ctx, query, args)
+		case <-ticker.C:
 		}
-		res := <-c.resCh
-		if res.Error != "" {
-			return nil, errors.New(res.Error)
-		}
-		if res.Txseq > 0 {
-			c.txseq = res.Txseq
-		}
-		return &rows{
-			data: res.ResultSet,
-		}, nil
 	}
 	return c.SQLiteConn.QueryContext(ctx, query, args)
 }
@@ -164,19 +173,25 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 
 func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if c.enableRedirect && !c.leader.IsLeader() {
-		c.reqCh <- &sqlv1.QueryRequest{
+		ctx, cancel := context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+		select {
+		case c.reqCh <- &sqlv1.QueryRequest{
 			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
 			Sql:           "BEGIN",
 			ReplicationId: c.replicationID,
+		}:
+			res := <-c.resCh
+			if res.Error != "" {
+				return nil, errors.New(res.Error)
+			}
+			c.activeTransaction = true
+			return &tx{
+				Conn: c,
+			}, nil
+		case <-ctx.Done():
+			return nil, ErrTimedOut
 		}
-		res := <-c.resCh
-		if res.Error != "" {
-			return nil, errors.New(res.Error)
-		}
-		c.activeTransaction = true
-		return &tx{
-			Conn: c,
-		}, nil
 	}
 	c.activeTransaction = true
 	return c.SQLiteConn.BeginTx(ctx, opts)
@@ -186,36 +201,82 @@ func (c *Conn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
+func (c *Conn) redirectQuery(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	slog.Debug("Redirecting query", "to", c.leader.RedirectTarget())
+	params := make([]*sqlv1.NamedValue, len(args))
+	for i, arg := range args {
+		val, err := hagrpc.ToAnypb(arg.Value)
+		if err != nil {
+			return nil, err
+		}
+		params[i] = &sqlv1.NamedValue{
+			Name:    arg.Name,
+			Ordinal: int64(arg.Ordinal),
+			Value:   val,
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	select {
+	case c.reqCh <- &sqlv1.QueryRequest{
+		Type:          sqlv1.QueryType_QUERY_TYPE_UNSPECIFIED,
+		Sql:           query,
+		Params:        params,
+		ReplicationId: c.replicationID,
+	}:
+		res := <-c.resCh
+		if res.Error != "" {
+			return nil, errors.New(res.Error)
+		}
+		if res.Txseq > 0 {
+			c.txseq = res.Txseq
+		}
+		return &rows{
+			data: res.ResultSet,
+		}, nil
+	case <-ctx.Done():
+		return nil, ErrTimedOut
+	}
+}
+
 type tx struct {
 	*Conn
 }
 
 func (tx *tx) Commit() error {
-	tx.reqCh <- &sqlv1.QueryRequest{
+	select {
+	case tx.reqCh <- &sqlv1.QueryRequest{
 		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
 		Sql:           "COMMIT",
 		ReplicationId: tx.replicationID,
+	}:
+		res := <-tx.resCh
+		if res.Error != "" {
+			return errors.New(res.Error)
+		}
+		tx.Conn.activeTransaction = false
+	case <-time.After(tx.Conn.timeout):
+		return ErrTimedOut
 	}
-	res := <-tx.resCh
-	if res.Error != "" {
-		return errors.New(res.Error)
-	}
-	tx.Conn.activeTransaction = false
-	return nil
 
+	return nil
 }
 
 func (tx *tx) Rollback() error {
-	tx.reqCh <- &sqlv1.QueryRequest{
+	select {
+	case tx.reqCh <- &sqlv1.QueryRequest{
 		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
 		Sql:           "ROLLBACK",
 		ReplicationId: tx.replicationID,
+	}:
+		res := <-tx.resCh
+		if res.Error != "" {
+			return errors.New(res.Error)
+		}
+		tx.Conn.activeTransaction = false
+	case <-time.After(tx.timeout):
+		return ErrTimedOut
 	}
-	res := <-tx.resCh
-	if res.Error != "" {
-		return errors.New(res.Error)
-	}
-	tx.Conn.activeTransaction = false
 	return nil
 }
 
