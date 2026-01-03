@@ -13,11 +13,13 @@ import (
 )
 
 func main() {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 	c, err := sqliteha.NewConnector("file:_examples/node1/my.db?_journal=WAL&_timeout=5000",
 		ha.WithName("node1"),
-		ha.WithMySQLPort(3306),
+		ha.WithMySQLPort(3307),
+		ha.WithGrpcPort(5001),
 		ha.WithEmbeddedNatsConfig(&ha.EmbeddedNatsConfig{
-			Port: 4222,
+			Port: 4223,
 		}))
 	if err != nil {
 		panic(err)

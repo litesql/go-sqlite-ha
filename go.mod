@@ -3,7 +3,8 @@ module github.com/litesql/go-sqlite-ha
 go 1.25
 
 require (
-	github.com/litesql/go-ha v0.4.4
+	github.com/litesql/go-ha v0.4.5
+	google.golang.org/grpc v1.78.0
 	modernc.org/sqlite v1.42.2
 )
 
@@ -38,9 +39,11 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
+	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251029180050-ab9386a59fda // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	modernc.org/libc v1.67.3 // indirect

@@ -41,8 +41,8 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 			drv.RegisterConnectionHook(d.ConnectionHook)
 		}
 	})
-	return ha.NewConnector(dsn, &drv, func(nodeName, filename string, disableDDLSync bool, publisher ha.Publisher, cdc ha.CDCPublisher) ha.ConnHooksProvider {
-		return newConnHooksProvider(nodeName, filename, disableDDLSync, publisher, cdc)
+	return ha.NewConnector(dsn, &drv, func(cfg ha.ConnHooksConfig) ha.ConnHooksProvider {
+		return newConnHooksProvider(cfg)
 	}, Backup, opts...)
 }
 
@@ -53,8 +53,8 @@ func NewConnector(name string, opts ...ha.Option) (*ha.Connector, error) {
 	}
 	opts = append(opts, nameOpts...)
 	var drv sqlite.Driver
-	return ha.NewConnector(dsn, &drv, func(nodeName, filename string, disableDDLSync bool, publisher ha.Publisher, cdc ha.CDCPublisher) ha.ConnHooksProvider {
-		return newConnHooksProvider(nodeName, filename, disableDDLSync, publisher, cdc)
+	return ha.NewConnector(dsn, &drv, func(cfg ha.ConnHooksConfig) ha.ConnHooksProvider {
+		return newConnHooksProvider(cfg)
 	}, Backup, opts...)
 
 }

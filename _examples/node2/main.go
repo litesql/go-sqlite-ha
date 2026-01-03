@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	_ "github.com/litesql/go-sqlite-ha"
@@ -12,13 +13,19 @@ import (
 // You need to previously exec go run ./_examples/node1
 
 func main() {
-	db, err := sql.Open("sqlite-ha", "file:_examples/node2/my.db?_journal=WAL&_timeout=5000&replicationURL=nats://localhost:4222&name=node2")
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+	db, err := sql.Open("sqlite-ha", "file:_examples/node2/my.db?_journal=WAL&_timeout=5000&replicationURL=nats://localhost:4223&name=node2&leaderProvider=static:localhost:5001")
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
 	time.Sleep(2 * time.Second) // wait for sync
+
+	_, err = db.ExecContext(context.Background(), "INSERT INTO users(name) VALUES('redirect to leader')")
+	if err != nil {
+		panic(err)
+	}
 	var name string
 	err = db.QueryRowContext(context.Background(), "SELECT name FROM users").Scan(&name)
 	if err != nil {

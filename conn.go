@@ -9,16 +9,30 @@ import (
 	"io"
 	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/litesql/go-ha"
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
+	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
+	hagrpc "github.com/litesql/go-ha/wire/grpc"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Conn struct {
 	SQLiteConn
 	disableDDLSync bool
+	enableRedirect bool
+
+	currentRedirectTarget string
+	grpcClientConn        *grpc.ClientConn
+
+	leader        ha.LeaderProvider
+	replicationID string
+	reqCh         chan *sqlv1.QueryRequest
+	resCh         chan *sqlv1.QueryResponse
+
+	txseq uint64
+
+	activeTransaction bool
 }
 
 func (c *Conn) Deserialize(b []byte, _ string) error {
@@ -26,10 +40,52 @@ func (c *Conn) Deserialize(b []byte, _ string) error {
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	slog.Debug("ExecContext", "query", query, "enableRedirect", c.enableRedirect)
 	stmts, errParse := ha.Parse(ctx, query)
 	if errParse != nil {
 		return nil, errParse
 	}
+
+	var modifies bool
+	for _, stmt := range stmts {
+		if stmt.ModifiesDatabase() {
+			modifies = true
+			break
+		}
+	}
+	if (modifies || c.activeTransaction) && c.enableRedirect && !c.leader.IsLeader() {
+		slog.Debug("Redirecting", "to", c.leader.RedirectTarget(), "query", query)
+		params := make([]*sqlv1.NamedValue, len(args))
+		for i, arg := range args {
+			val, err := hagrpc.ToAnypb(arg.Value)
+			if err != nil {
+				return nil, err
+			}
+			params[i] = &sqlv1.NamedValue{
+				Name:    arg.Name,
+				Ordinal: int64(arg.Ordinal),
+				Value:   val,
+			}
+		}
+		c.reqCh <- &sqlv1.QueryRequest{
+			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+			Sql:           query,
+			Params:        params,
+			ReplicationId: c.replicationID,
+		}
+		res := <-c.resCh
+		if res.Error != "" {
+			return nil, errors.New(res.Error)
+		}
+		if res.Txseq > 0 {
+			c.txseq = res.Txseq
+		}
+		return result{
+			lastInsertId: res.LastInsertId,
+			rowsAffected: res.RowsAffected,
+		}, nil
+	}
+
 	var ddlCommands strings.Builder
 	if !c.disableDDLSync {
 		for _, stmt := range stmts {
@@ -54,166 +110,238 @@ func (c *Conn) Exec(query string, args []driver.Value) (driver.Result, error) {
 	return c.ExecContext(context.Background(), query, toNamedValues(args))
 }
 
-type connHooksProvider struct {
-	nodeName       string
-	filename       string
-	disableDDLSync bool
-	publisher      ha.Publisher
-	cdcPublisher   ha.CDCPublisher
-}
-
-func newConnHooksProvider(nodeName string, filename string, disableDDLSync bool, publisher ha.Publisher, cdcPublisher ha.CDCPublisher) *connHooksProvider {
-	return &connHooksProvider{
-		nodeName:       nodeName,
-		filename:       filename,
-		disableDDLSync: disableDDLSync,
-		publisher:      publisher,
-		cdcPublisher:   cdcPublisher,
+func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	slog.Debug("QuerContext", "query", query, "enableRedirect", c.enableRedirect)
+	stmts, errParse := ha.Parse(ctx, query)
+	if errParse != nil {
+		return nil, errParse
 	}
-}
 
-type ConnHooksRegister interface {
-	RegisterPreUpdateHook(sqlite.PreUpdateHookFn)
-	RegisterCommitHook(sqlite.CommitHookFn)
-	RegisterRollbackHook(sqlite.RollbackHookFn)
-}
-
-func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
-	sqliteConn, _ := c.(SQLiteConn)
-	enableCDCHooks(sqliteConn, p.nodeName, p.filename, p.publisher, p.cdcPublisher)
-	return &Conn{
-		SQLiteConn:     sqliteConn,
-		disableDDLSync: p.disableDDLSync,
-	}, nil
-}
-
-func (p *connHooksProvider) DisableHooks(conn *sql.Conn) error {
-	sconn, err := sqliteConn(conn)
-	if err != nil {
-		return err
-	}
-	sconn.RegisterPreUpdateHook(nil)
-	sconn.RegisterCommitHook(nil)
-	sconn.RegisterRollbackHook(nil)
-	return nil
-}
-
-func (p *connHooksProvider) EnableHooks(conn *sql.Conn) error {
-	sconn, err := sqliteConn(conn)
-	if err != nil {
-		return err
-	}
-	enableCDCHooks(sconn, p.nodeName, p.filename, p.publisher, p.cdcPublisher)
-	return nil
-}
-
-func enableCDCHooks(sconn SQLiteConn, nodeName, filename string, publisher ha.Publisher, cdc ha.CDCPublisher) {
-	changeSetSessionsMu.Lock()
-	defer changeSetSessionsMu.Unlock()
-
-	cs := ha.NewChangeSet(nodeName, filename)
-	changeSetSessions[sconn] = cs
-	sconn.RegisterPreUpdateHook(func(d sqlite.SQLitePreUpdateData) {
-		change, ok := getChange(&d)
-		if !ok {
-			return
+	var modifies bool
+	for _, stmt := range stmts {
+		if stmt.ModifiesDatabase() {
+			modifies = true
+			break
 		}
-		rows, err := sconn.QueryContext(context.Background(), fmt.Sprintf("SELECT name, type, pk FROM %s.PRAGMA_TABLE_INFO('%s') ORDER BY cid", change.Database, change.Table), nil)
-		if err != nil {
-			slog.Error("failed to read columns", "error", err, "database", change.Database, "table", change.Table)
-			return
-		}
-		defer rows.Close()
-		var columns, types, pkColumns []string
-		for {
-			dataRow := []driver.Value{new(string), new(string), new(int64)}
-
-			err := rows.Next(dataRow)
+	}
+	if (modifies || c.activeTransaction) && c.enableRedirect && !c.leader.IsLeader() {
+		slog.Debug("Redirecting query", "to", c.leader.RedirectTarget())
+		params := make([]*sqlv1.NamedValue, len(args))
+		for i, arg := range args {
+			val, err := hagrpc.ToAnypb(arg.Value)
 			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					slog.Error("failed to read table columns", "error", err, "table", change.Table)
-				}
-				break
+				return nil, err
 			}
-			if v, ok := dataRow[0].(string); ok {
-				columns = append(columns, v)
-			} else {
-				continue
-			}
-			if v, ok := dataRow[1].(string); ok {
-				types = append(types, v)
-			}
-			if v, ok := dataRow[2].(int64); ok && v > 0 {
-				pkColumns = append(pkColumns, dataRow[0].(string))
+			params[i] = &sqlv1.NamedValue{
+				Name:    arg.Name,
+				Ordinal: int64(arg.Ordinal),
+				Value:   val,
 			}
 		}
-		change.Columns = columns
-		change.PKColumns = pkColumns
-		for i, t := range types {
-			if t != "BLOB" {
-				if i < len(change.OldValues) && change.OldValues[i] != nil {
-					change.OldValues[i] = convert(change.OldValues[i])
-				}
-				if i < len(change.NewValues) && change.NewValues[i] != nil {
-					change.NewValues[i] = convert(change.NewValues[i])
-				}
-			}
+		c.reqCh <- &sqlv1.QueryRequest{
+			Type:          sqlv1.QueryType_QUERY_TYPE_UNSPECIFIED,
+			Sql:           query,
+			Params:        params,
+			ReplicationId: c.replicationID,
 		}
-
-		cs.AddChange(change)
-	})
-
-	sconn.RegisterCommitHook(func() int32 {
-		if err := cs.Send(publisher); err != nil {
-			slog.Error("failed to send changeset", "error", err)
-			return 1
+		res := <-c.resCh
+		if res.Error != "" {
+			return nil, errors.New(res.Error)
 		}
-		if cdc != nil {
-			data := cs.DebeziumData()
-			if len(data) > 0 {
-				if err := cdc.Publish(data); err != nil {
-					slog.Error("failed to send cdc", "error", err)
-					return 1
-				}
-			}
+		if res.Txseq > 0 {
+			c.txseq = res.Txseq
 		}
-		return 0
-	})
-	sconn.RegisterRollbackHook(func() {
-		cs.Clear()
-	})
+		return &rows{
+			data: res.ResultSet,
+		}, nil
+	}
+	return c.SQLiteConn.QueryContext(ctx, query, args)
 }
 
-type SQLiteConn interface {
-	driver.Conn
-	sqlite.ExecQuerierContext
-	sqlite.HookRegisterer
-	NewBackup(string) (*sqlite.Backup, error)
-	Serialize() ([]byte, error)
-	Deserialize([]byte) error
+func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
+	return c.QueryContext(context.Background(), query, toNamedValues(args))
+}
+
+func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if c.enableRedirect && !c.leader.IsLeader() {
+		c.reqCh <- &sqlv1.QueryRequest{
+			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+			Sql:           "BEGIN",
+			ReplicationId: c.replicationID,
+		}
+		res := <-c.resCh
+		if res.Error != "" {
+			return nil, errors.New(res.Error)
+		}
+		c.activeTransaction = true
+		return &tx{
+			Conn: c,
+		}, nil
+	}
+	c.activeTransaction = true
+	return c.SQLiteConn.BeginTx(ctx, opts)
+}
+
+func (c *Conn) Begin() (driver.Tx, error) {
+	return c.BeginTx(context.Background(), driver.TxOptions{})
+}
+
+type tx struct {
+	*Conn
+}
+
+func (tx *tx) Commit() error {
+	tx.reqCh <- &sqlv1.QueryRequest{
+		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+		Sql:           "COMMIT",
+		ReplicationId: tx.replicationID,
+	}
+	res := <-tx.resCh
+	if res.Error != "" {
+		return errors.New(res.Error)
+	}
+	tx.Conn.activeTransaction = false
+	return nil
+
+}
+
+func (tx *tx) Rollback() error {
+	tx.reqCh <- &sqlv1.QueryRequest{
+		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+		Sql:           "ROLLBACK",
+		ReplicationId: tx.replicationID,
+	}
+	res := <-tx.resCh
+	if res.Error != "" {
+		return errors.New(res.Error)
+	}
+	tx.Conn.activeTransaction = false
+	return nil
+}
+
+func (c *Conn) Close() error {
+	c.activeTransaction = false
+	if c.grpcClientConn != nil {
+		c.grpcClientConn.Close()
+	}
+	return c.SQLiteConn.Close()
+}
+
+func (c *Conn) start() error {
+	if c.leader.IsLeader() {
+		return nil
+	}
+	target := c.leader.RedirectTarget()
+	lower := strings.ToLower(target)
+	// http(s) protocols are used for the HTTP leader proxy middleware
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return nil
+	}
+	if target == c.currentRedirectTarget {
+		return nil
+	}
+	if c.grpcClientConn != nil {
+		c.grpcClientConn.Close()
+	}
+	var err error
+	c.grpcClientConn, err = grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return err
+	}
+	client := sqlv1.NewDatabaseServiceClient(c.grpcClientConn)
+	stream, err := client.Query(context.Background())
+	if err != nil {
+		return err
+	}
+	c.currentRedirectTarget = target
+
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			if err == io.EOF {
+				c.currentRedirectTarget = ""
+				return // Stream closed
+			}
+			if err != nil {
+				c.currentRedirectTarget = ""
+				slog.Debug("failed to receive message", "error", err)
+				c.Close()
+			}
+			c.resCh <- msg
+		}
+	}()
+
+	go func() {
+		for req := range c.reqCh {
+			err := stream.Send(req)
+			if err != nil {
+				c.currentRedirectTarget = ""
+				slog.Debug("failed to send message", "error", err)
+				c.Close()
+			}
+		}
+	}()
+
+	return nil
+}
+
+type result struct {
+	lastInsertId int64
+	rowsAffected int64
+}
+
+func (r result) LastInsertId() (int64, error) {
+	return r.lastInsertId, nil
+}
+
+func (r result) RowsAffected() (int64, error) {
+	return r.rowsAffected, nil
+}
+
+type rows struct {
+	data  *sqlv1.Data
+	index int
+}
+
+func (r *rows) Columns() []string {
+	if r.data == nil {
+		return []string{}
+	}
+	return r.data.GetColumns()
+}
+
+func (r *rows) Close() error {
+	r.data = nil
+	return nil
+}
+
+func (r *rows) Next(dest []driver.Value) error {
+	if r.data == nil || r.data.Rows == nil || r.index >= len(r.data.Rows) {
+		return io.EOF
+	}
+	row := r.data.Rows[r.index]
+	for i, val := range row.GetValues() {
+		dest[i] = hagrpc.FromAnypb(val)
+	}
+	r.index++
+	return nil
 }
 
 type rawer interface {
 	Raw() driver.Conn
 }
 
-func sqliteConn(conn *sql.Conn) (SQLiteConn, error) {
-	var sqliteConn SQLiteConn
+func haSqliteConn(conn *sql.Conn) (*Conn, error) {
+	var haSqliteConn *Conn
 	err := conn.Raw(func(driverConn any) error {
 		switch c := driverConn.(type) {
 		case *Conn:
-			sqliteConn = c.SQLiteConn
-			return nil
-		case SQLiteConn:
-			sqliteConn = c
+			haSqliteConn = c
 			return nil
 		case rawer:
 			switch c2 := c.Raw().(type) {
 			case *Conn:
-				sqliteConn = c2.SQLiteConn
-				return nil
-			case SQLiteConn:
-				sqliteConn = c2
+				haSqliteConn = c2
 				return nil
 			default:
 				return fmt.Errorf("not a sqlite connection: %T", c2)
@@ -222,92 +350,7 @@ func sqliteConn(conn *sql.Conn) (SQLiteConn, error) {
 			return fmt.Errorf("not a sqlite connection: %T", conn)
 		}
 	})
-	return sqliteConn, err
-}
-
-var (
-	changeSetSessions   = make(map[SQLiteConn]*ha.ChangeSet)
-	changeSetSessionsMu sync.RWMutex
-)
-
-func addSQLChange(conn SQLiteConn, sql string, args []any) error {
-	changeSetSessionsMu.RLock()
-	defer changeSetSessionsMu.RUnlock()
-
-	cs := changeSetSessions[conn]
-	if cs == nil {
-		return errors.New("no changeset session for the connection")
-	}
-	cs.AddChange(ha.Change{
-		Operation: "SQL",
-		Command:   sql,
-		Args:      args,
-	})
-	return nil
-}
-
-func removeLastChange(conn SQLiteConn) error {
-	changeSetSessionsMu.RLock()
-	defer changeSetSessionsMu.RUnlock()
-
-	cs := changeSetSessions[conn]
-	if cs == nil {
-		return errors.New("no changeset session for the connection")
-	}
-	if len(cs.Changes) > 0 {
-		cs.Changes = cs.Changes[:len(cs.Changes)-1]
-	}
-	return nil
-}
-
-func convert(src any) any {
-	switch v := src.(type) {
-	case []byte:
-		return string(v)
-	default:
-		return src
-	}
-}
-
-func getChange(d *sqlite.SQLitePreUpdateData) (c ha.Change, ok bool) {
-	ok = true
-	c = ha.Change{
-		Database: d.DatabaseName,
-		Table:    d.TableName,
-		OldRowID: d.OldRowID,
-		NewRowID: d.NewRowID,
-	}
-	count := d.Count()
-	switch d.Op {
-	case sqlite3.SQLITE_UPDATE:
-		c.Operation = "UPDATE"
-		c.OldValues = make([]any, count)
-		c.NewValues = make([]any, count)
-		for i := range count {
-			c.OldValues[i] = &c.OldValues[i]
-			c.NewValues[i] = &c.NewValues[i]
-		}
-		d.Old(c.OldValues...)
-		d.New(c.NewValues...)
-	case sqlite3.SQLITE_INSERT:
-		c.Operation = "INSERT"
-		c.NewValues = make([]any, count)
-		for i := range count {
-			c.NewValues[i] = &c.NewValues[i]
-		}
-		d.New(c.NewValues...)
-	case sqlite3.SQLITE_DELETE:
-		c.Operation = "DELETE"
-		c.OldValues = make([]any, count)
-		for i := range count {
-			c.OldValues[i] = &c.OldValues[i]
-		}
-		d.Old(c.OldValues...)
-	default:
-		c.Operation = fmt.Sprintf("UNKNOWN - %d", d.Op)
-	}
-
-	return
+	return haSqliteConn, err
 }
 
 func toNamedValues(vals []driver.Value) (r []driver.NamedValue) {
