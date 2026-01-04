@@ -13,7 +13,7 @@ import (
 
 	"github.com/litesql/go-ha"
 	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
-	hagrpc "github.com/litesql/go-ha/wire/grpc"
+	hagrpc "github.com/litesql/go-ha/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
