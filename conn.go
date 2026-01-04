@@ -95,6 +95,9 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 				rowsAffected: res.RowsAffected,
 			}, nil
 		case <-ctx.Done():
+			if !c.activeTransaction {
+				return nil, driver.ErrBadConn
+			}
 			return nil, ErrTimedOut
 		}
 	}
@@ -190,7 +193,7 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 				Conn: c,
 			}, nil
 		case <-ctx.Done():
-			return nil, ErrTimedOut
+			return nil, driver.ErrBadConn
 		}
 	}
 	c.activeTransaction = true
@@ -235,7 +238,10 @@ func (c *Conn) redirectQuery(ctx context.Context, query string, args []driver.Na
 			data: res.ResultSet,
 		}, nil
 	case <-ctx.Done():
-		return nil, ErrTimedOut
+		if c.activeTransaction {
+			return nil, ErrTimedOut
+		}
+		return nil, driver.ErrBadConn
 	}
 }
 
@@ -307,12 +313,14 @@ func (c *Conn) start() error {
 	var err error
 	c.grpcClientConn, err = grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return err
+		slog.Debug("connect to grpc", "target", target, "error", err)
+		return driver.ErrBadConn
 	}
 	client := sqlv1.NewDatabaseServiceClient(c.grpcClientConn)
 	stream, err := client.Query(context.Background())
 	if err != nil {
-		return err
+		slog.Debug("query over grpc", "target", target, "error", err)
+		return driver.ErrBadConn
 	}
 	c.currentRedirectTarget = target
 
