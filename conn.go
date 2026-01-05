@@ -424,6 +424,34 @@ func haSqliteConn(conn *sql.Conn) (*Conn, error) {
 	return haSqliteConn, err
 }
 
+func sqliteConn(conn *sql.Conn) (SQLiteConn, error) {
+	var sqliteConn SQLiteConn
+	err := conn.Raw(func(driverConn any) error {
+		switch c := driverConn.(type) {
+		case *Conn:
+			sqliteConn = c.SQLiteConn
+			return nil
+		case SQLiteConn:
+			sqliteConn = c
+			return nil
+		case rawer:
+			switch c2 := c.Raw().(type) {
+			case *Conn:
+				sqliteConn = c2.SQLiteConn
+				return nil
+			case SQLiteConn:
+				sqliteConn = c2
+				return nil
+			default:
+				return fmt.Errorf("not a sqlite connection: %T", c2)
+			}
+		default:
+			return fmt.Errorf("not a sqlite connection: %T", conn)
+		}
+	})
+	return sqliteConn, err
+}
+
 func toNamedValues(vals []driver.Value) (r []driver.NamedValue) {
 	r = make([]driver.NamedValue, len(vals))
 	for i, val := range vals {

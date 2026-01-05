@@ -15,7 +15,7 @@ func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
 	}
 	defer srcConn.Close()
 
-	sqliteSrcConn, err := haSqliteConn(srcConn)
+	sqliteSrcConn, err := sqliteConn(srcConn)
 	if err != nil {
 		return err
 	}
