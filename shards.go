@@ -1,6 +1,8 @@
 package sqliteha
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -10,13 +12,16 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/litesql/go-ha"
 )
 
 func (c *Conn) crossShardQuery(ctx context.Context, query string, args []driver.NamedValue, queryRouter *regexp.Regexp, stmt *ha.Statement) (driver.Rows, error) {
-	slog.Debug("Executing cross-sharding query", "query", query, "queryRouter", queryRouter.String())
+	slog.Debug("Executing cross-shard query", "query", query, "queryRouter", queryRouter.String())
 	dbs := make([]*sql.DB, 0)
 	for _, dsn := range ha.ListDSN() {
 		if !queryRouter.MatchString(dsn) {
@@ -32,18 +37,10 @@ func (c *Conn) crossShardQuery(ctx context.Context, query string, args []driver.
 	if len(dbs) == 0 {
 		return nil, fmt.Errorf("no databases available to execute query based on queryRouter=%s", queryRouter.String())
 	}
-	return unionQueries(context.WithValue(ctx, ignoreQueryRouterKey, true), dbs, query, args, stmt.HasDistinct())
+	return unionQueries(context.WithValue(ctx, ignoreQueryRouterKey, true), dbs, query, args, stmt)
 }
 
-func unionQueries(ctx context.Context, dbs []*sql.DB, query string, args []driver.NamedValue, hasDistinct bool) (driver.Rows, error) {
-	var result shardsResults
-	if hasDistinct {
-		result = &multiDistinctResults{
-			&multiResults{},
-		}
-	} else {
-		result = &multiResults{}
-	}
+func unionQueries(ctx context.Context, dbs []*sql.DB, query string, args []driver.NamedValue, stmt *ha.Statement) (driver.Rows, error) {
 	//TODO create a worker pool
 	chErr := make(chan error, len(dbs))
 	chRows := make(chan driver.Rows, len(dbs))
@@ -74,6 +71,51 @@ func unionQueries(ctx context.Context, dbs []*sql.DB, query string, args []drive
 		}
 	})
 
+	chValues := make(chan []driver.Value)
+	if !stmt.HasDistinct() && len(stmt.OrderBy()) == 0 {
+		result := newStreamResults(chValues)
+		var nextErrs error
+		chFirstResponse := make(chan struct{})
+		var hasValues bool
+		go func() {
+			defer close(chValues)
+			for rows := range chRows {
+				size := len(rows.Columns())
+				for {
+					values := make([]driver.Value, size)
+					err := rows.Next(values)
+					if err != nil {
+						if err == io.EOF {
+							break
+						}
+						nextErrs = errors.Join(nextErrs, err)
+						break
+					}
+					if !hasValues {
+						hasValues = true
+						result.setColumns(rows.Columns())
+						close(chFirstResponse)
+					}
+					chValues <- values
+				}
+			}
+			if !hasValues {
+				close(chFirstResponse)
+			}
+		}()
+		<-chFirstResponse
+		if !hasValues {
+			wg.Wait()
+			errs = errors.Join(errs, nextErrs)
+			if errs != nil {
+				return nil, errs
+			}
+			return nil, sql.ErrNoRows
+		}
+		return result, nil
+	}
+	result := newBufferedResults(stmt.HasDistinct())
+	var nextErrs error
 	for rows := range chRows {
 		result.setColumns(rows.Columns())
 		size := len(rows.Columns())
@@ -84,15 +126,19 @@ func unionQueries(ctx context.Context, dbs []*sql.DB, query string, args []drive
 				if err == io.EOF {
 					break
 				}
+				nextErrs = errors.Join(nextErrs, err)
 				break
 			}
 			result.append(row)
 		}
 	}
 	wg.Wait()
-
-	if len(result.getValues()) == 0 && errs != nil {
+	errs = errors.Join(errs, nextErrs)
+	if result.empty() && errs != nil {
 		return nil, errs
+	}
+	if err := result.sort(stmt.OrderBy()); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -109,33 +155,67 @@ func queryDB(ctx context.Context, db *sql.DB, query string, args []driver.NamedV
 	return sqlConn.QueryContext(ctx, query, args)
 }
 
-type shardsResults interface {
-	driver.Rows
-	append([]driver.Value)
-	setColumns([]string)
-	getValues() [][]driver.Value
+func newStreamResults(results chan []driver.Value) *streamResults {
+	return &streamResults{
+		results: results,
+	}
 }
 
-type multiResults struct {
-	columns []string
-	values  [][]driver.Value
-	index   int
+type streamResults struct {
+	columns    []string
+	results    chan []driver.Value
+	hasResults bool
 }
 
-func (r *multiResults) setColumns(columns []string) {
+func (r *streamResults) setColumns(columns []string) {
 	r.columns = columns
 }
 
-func (r *multiResults) Columns() []string {
+func (r *streamResults) Columns() []string {
 	return r.columns
 }
 
-func (r *multiResults) Close() error {
+func (r *streamResults) Close() error {
+	return nil
+}
+
+func (r *streamResults) Next(dest []driver.Value) error {
+	src, ok := <-r.results
+	if !ok {
+		return io.EOF
+	}
+	r.hasResults = true
+	copy(dest, src)
+	return nil
+}
+
+type bufferedResults struct {
+	distinct bool
+	columns  []string
+	values   [][]driver.Value
+	index    int
+}
+
+func newBufferedResults(distinct bool) *bufferedResults {
+	return &bufferedResults{
+		distinct: distinct,
+	}
+}
+
+func (r *bufferedResults) setColumns(columns []string) {
+	r.columns = columns
+}
+
+func (r *bufferedResults) Columns() []string {
+	return r.columns
+}
+
+func (r *bufferedResults) Close() error {
 	r.values = nil
 	return nil
 }
 
-func (r *multiResults) Next(dest []driver.Value) error {
+func (r *bufferedResults) Next(dest []driver.Value) error {
 	if r.values == nil || r.index >= len(r.values) {
 		return io.EOF
 	}
@@ -144,19 +224,11 @@ func (r *multiResults) Next(dest []driver.Value) error {
 	return nil
 }
 
-func (r *multiResults) append(row []driver.Value) {
-	r.values = append(r.values, row)
-}
-
-func (r *multiResults) getValues() [][]driver.Value {
-	return r.values
-}
-
-type multiDistinctResults struct {
-	*multiResults
-}
-
-func (r *multiDistinctResults) append(row []driver.Value) {
+func (r *bufferedResults) append(row []driver.Value) {
+	if !r.distinct {
+		r.values = append(r.values, row)
+		return
+	}
 	var exists bool
 	for _, val := range r.values {
 		if slices.Equal(val, row) {
@@ -166,5 +238,109 @@ func (r *multiDistinctResults) append(row []driver.Value) {
 	}
 	if !exists {
 		r.values = append(r.values, row)
+	}
+}
+
+func (r *bufferedResults) empty() bool {
+	return len(r.values) == 0
+}
+
+func (r *bufferedResults) sort(orderBy []string) error {
+	if len(orderBy) == 0 {
+		return nil
+	}
+	if err := r.validOrderByClause(orderBy); err != nil {
+		return err
+	}
+
+	slices.SortFunc(r.values, r.sortFunc(orderBy))
+	return nil
+}
+
+func (r *bufferedResults) sliceIndexByNameOrOrder(column string) int {
+	for i, col := range r.columns {
+		if strings.EqualFold(column, col) {
+			return i
+		}
+	}
+
+	if i, err := strconv.Atoi(column); err == nil {
+		return i - 1
+	}
+	return -1
+}
+
+func (r *bufferedResults) validOrderByClause(orderBy []string) error {
+	for _, column := range orderBy {
+		var exists bool
+		column := strings.TrimSuffix(column, " DESC")
+		for _, col := range r.columns {
+			if strings.EqualFold(column, col) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			if i, err := strconv.Atoi(column); err == nil && i >= 1 && len(column) >= i {
+				exists = true
+			}
+		}
+		if !exists {
+			return fmt.Errorf("invalid orderBy clause: %s", column)
+		}
+	}
+	return nil
+}
+
+type orderClause struct {
+	order int
+	desc  bool
+}
+
+func (r *bufferedResults) sortFunc(orderBy []string) func(a []driver.Value, b []driver.Value) int {
+	clauses := make([]orderClause, 0)
+	for _, ob := range orderBy {
+		column, desc := strings.CutSuffix(ob, " DESC")
+		clauses = append(clauses, orderClause{
+			order: r.sliceIndexByNameOrOrder(column),
+			desc:  desc,
+		})
+	}
+	return func(a, b []driver.Value) int {
+		for _, term := range clauses {
+			var result int
+			aValue := a[term.order]
+			bValue := b[term.order]
+			switch x := aValue.(type) {
+			case int64:
+				if y, ok := bValue.(int64); ok {
+					result = cmp.Compare(x, y)
+				}
+			case float64:
+				if y, ok := bValue.(float64); ok {
+					result = cmp.Compare(x, y)
+				}
+			case string:
+				if y, ok := bValue.(string); ok {
+					result = cmp.Compare(x, y)
+				}
+			case time.Time:
+				if y, ok := bValue.(time.Time); ok {
+					result = x.Compare(y)
+				}
+			case []byte:
+				if y, ok := bValue.([]byte); ok {
+					result = bytes.Compare(x, y)
+				}
+			}
+			if result != 0 {
+				if term.desc {
+					return result * -1
+				}
+				return result
+			}
+
+		}
+		return 0
 	}
 }
