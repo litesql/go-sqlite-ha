@@ -16,7 +16,9 @@ import (
 	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
 	hagrpc "github.com/litesql/go-ha/grpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var ErrTimedOut = errors.New("Timed out")
@@ -46,6 +48,8 @@ type Conn struct {
 
 	txseqTracker ha.TxSeqTracker
 	timeout      time.Duration
+
+	invalid bool
 
 	queryRouter *regexp.Regexp
 }
@@ -133,6 +137,10 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 
 func (c *Conn) Exec(query string, args []driver.Value) (driver.Result, error) {
 	return c.ExecContext(context.Background(), query, toNamedValues(args))
+}
+
+func (c *Conn) IsValid() bool {
+	return !c.invalid
 }
 
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -312,8 +320,12 @@ func (tx *tx) Rollback() error {
 	return nil
 }
 
-func (c *Conn) Close() error {
+func (c *Conn) ResetSession(ctx context.Context) error {
 	c.activeTransaction = false
+	return nil
+}
+
+func (c *Conn) Close() error {
 	if c.grpcClientConn != nil {
 		c.grpcClientConn.Close()
 	}
@@ -322,6 +334,9 @@ func (c *Conn) Close() error {
 
 func (c *Conn) start() error {
 	if c.leader.IsLeader() {
+		if c.grpcClientConn != nil {
+			c.grpcClientConn.Close()
+		}
 		return nil
 	}
 	target := c.leader.RedirectTarget()
@@ -333,6 +348,8 @@ func (c *Conn) start() error {
 	if target == c.currentRedirectTarget {
 		return nil
 	}
+	c.currentRedirectTarget = target
+
 	if c.grpcClientConn != nil {
 		c.grpcClientConn.Close()
 	}
@@ -348,20 +365,27 @@ func (c *Conn) start() error {
 		slog.Debug("query over grpc", "target", target, "error", err)
 		return driver.ErrBadConn
 	}
-	c.currentRedirectTarget = target
 
 	go func() {
+		sesisonTarget := target
 		for {
 			msg, err := stream.Recv()
 			if err == io.EOF {
-				c.currentRedirectTarget = ""
-				c.activeTransaction = false
+				if c.currentRedirectTarget == sesisonTarget {
+					c.invalid = true
+					c.currentRedirectTarget = ""
+				}
 				return // Stream closed
 			}
 			if err != nil {
-				c.currentRedirectTarget = ""
-				c.activeTransaction = false
-				slog.Debug("failed to receive message", "error", err)
+				if c.currentRedirectTarget == sesisonTarget {
+					c.invalid = true
+					c.currentRedirectTarget = ""
+				}
+				st, ok := status.FromError(err)
+				if ok && st.Code() != codes.Canceled {
+					slog.Debug("failed to receive message", "error", err)
+				}
 				return
 			}
 			c.resCh <- msg
@@ -369,12 +393,17 @@ func (c *Conn) start() error {
 	}()
 
 	go func() {
+		sesisonTarget := target
 		for req := range c.reqCh {
 			err := stream.Send(req)
 			if err != nil {
 				c.currentRedirectTarget = ""
 				c.activeTransaction = false
 				slog.Debug("failed to send message", "error", err)
+				if c.currentRedirectTarget == sesisonTarget {
+					c.invalid = true
+					c.currentRedirectTarget = ""
+				}
 				return
 			}
 		}
