@@ -72,7 +72,7 @@ func unionQueries(ctx context.Context, dbs []*sql.DB, query string, args []drive
 	})
 
 	chValues := make(chan []driver.Value)
-	if !stmt.HasDistinct() && len(stmt.OrderBy()) == 0 {
+	if (!stmt.HasDistinct() && len(stmt.OrderBy()) == 0) || len(dbs) < 2 {
 		result := newStreamResults(chValues)
 		var nextErrs error
 		chFirstResponse := make(chan struct{})
