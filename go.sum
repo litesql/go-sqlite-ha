@@ -24,6 +24,8 @@ github.com/klauspost/compress v1.18.2 h1:iiPHWW0YrcFgpBYhsA6D1+fqHssJscY/Tm/y2Uq
 github.com/klauspost/compress v1.18.2/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
 github.com/litesql/go-ha v0.5.7 h1:wgz/mlwbvSddAe/myv6VHNADKJaqn8DuBT7nreeRVLQ=
 github.com/litesql/go-ha v0.5.7/go.mod h1:JRAfzBjdglBs2YOsMQVqDQ3Lh0LVph9lUoQ83BXzw7s=
+github.com/litesql/go-ha v0.5.8 h1:/ubzwasT7tF3PL0kWyhIwgx3d+KDvl8N5N+pZWj6jGE=
+github.com/litesql/go-ha v0.5.8/go.mod h1:JRAfzBjdglBs2YOsMQVqDQ3Lh0LVph9lUoQ83BXzw7s=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 h1:KGuD/pM2JpL9FAYvBrnBBeENKZNh6eNtjqytV6TYjnk=

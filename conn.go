@@ -23,7 +23,7 @@ import (
 
 var ErrTimedOut = errors.New("Timed out")
 
-var queryRouterHintMatcher = regexp.MustCompile(`(?i)/\*\s*queryRouter=(.*?)\s*\*/`).FindStringSubmatch
+var queryRouterHintMatcher = regexp.MustCompile(`(?i)/\*\+\s*db=(.*?)\s*\*/`).FindStringSubmatch
 
 type contextKey int
 
@@ -190,7 +190,9 @@ LOOP:
 			}
 		}
 		if qr != nil && qr.String() != "self" {
-			return c.crossShardQuery(ctx, query, args, qr, stmts[0])
+			return ha.CrossShardQuery(context.WithValue(ctx, ignoreQueryRouterKey, true), stmts[0], args, qr, func(c *sql.Conn) (driver.QueryerContext, error) {
+				return sqliteConn(c)
+			})
 		}
 	}
 	return c.SQLiteConn.QueryContext(ctx, query, args)

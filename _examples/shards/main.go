@@ -56,8 +56,8 @@ func main() {
 		fmt.Printf("ID=%d Name=%s\n", id, name)
 	}
 
-	// subscribe queryRouter
-	rows, err = db2.QueryContext(context.Background(), "SELECT /* queryRouter=shard1 */ rowid, name FROM users")
+	// override queryRouter using SQL hint /*+ db=DSN */
+	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=shard1 */ rowid, name FROM users")
 	if err != nil {
 		panic(err)
 	}
