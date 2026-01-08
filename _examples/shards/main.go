@@ -37,7 +37,7 @@ func main() {
 		panic(err)
 	}
 	//query on all shards
-	rows, err := db2.QueryContext(context.Background(), "SELECT rowid, name FROM users ORDER BY rowid DESC")
+	rows, err := db2.QueryContext(context.Background(), "SELECT rowid, name FROM users ORDER BY rowid DESC LIMIT 5")
 	if err != nil {
 		panic(err)
 	}
@@ -70,6 +70,23 @@ func main() {
 			panic(err)
 		}
 		fmt.Printf("ID=%d Name=%s\n", id, name)
+	}
+
+	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=.* */ avg(rowid), count(*), min(rowid), max(rowid+1), name FROM users GROUP BY name")
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+
+	fmt.Println("Shard aggregate results")
+	var count, min, max int
+	var avg float64
+	for rows.Next() {
+		err := rows.Scan(&avg, &count, &min, &max, &name)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Avg=%v Count=%d Min=%d Max=%d Name=%s\n", avg, count, min, max, name)
 	}
 
 }
