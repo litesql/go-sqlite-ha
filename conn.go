@@ -91,7 +91,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 
 		select {
 		case c.reqCh <- &sqlv1.QueryRequest{
-			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
 			Sql:           query,
 			Params:        params,
 			ReplicationId: c.replicationID,
@@ -216,7 +216,7 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		defer cancel()
 		select {
 		case c.reqCh <- &sqlv1.QueryRequest{
-			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
 			Sql:           "BEGIN",
 			ReplicationId: c.replicationID,
 		}:
@@ -258,7 +258,7 @@ func (c *Conn) redirectQuery(ctx context.Context, query string, args []driver.Na
 	defer cancel()
 	select {
 	case c.reqCh <- &sqlv1.QueryRequest{
-		Type:          sqlv1.QueryType_QUERY_TYPE_UNSPECIFIED,
+		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_QUERY,
 		Sql:           query,
 		Params:        params,
 		ReplicationId: c.replicationID,
@@ -288,7 +288,7 @@ type tx struct {
 func (tx *tx) Commit() error {
 	select {
 	case tx.reqCh <- &sqlv1.QueryRequest{
-		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
 		Sql:           "COMMIT",
 		ReplicationId: tx.replicationID,
 	}:
@@ -307,7 +307,7 @@ func (tx *tx) Commit() error {
 func (tx *tx) Rollback() error {
 	select {
 	case tx.reqCh <- &sqlv1.QueryRequest{
-		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC,
+		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
 		Sql:           "ROLLBACK",
 		ReplicationId: tx.replicationID,
 	}:
