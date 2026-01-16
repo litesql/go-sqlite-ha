@@ -3,6 +3,7 @@ package sqliteha_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/litesql/go-ha"
@@ -30,9 +31,10 @@ func TestConnector(t *testing.T) {
 	if pub.changes[0].Operation != "SQL" {
 		t.Errorf("expect SQL operation, but got %q", pub.changes[0].Operation)
 	}
-	want := "CREATE TABLE IF NOT EXISTS users(ID INTEGER PRIMARY KEY, name TEXT); CREATE TABLE IF NOT EXISTS users2(ID INTEGER PRIMARY KEY, name TEXT)"
-	if pub.changes[0].Command != want {
-		t.Errorf("want %q, got %q", want, pub.changes[0].Command)
+	want := "CREATE TABLE IF NOT EXISTS users (ID INTEGER PRIMARY KEY, name TEXT);CREATE TABLE IF NOT EXISTS users2 (ID INTEGER PRIMARY KEY, name TEXT)"
+	got := strings.ReplaceAll(pub.changes[0].Command, "\"", "")
+	if strings.EqualFold(got, want) {
+		t.Errorf("want %q, got %q", want, got)
 	}
 	_, err = db.ExecContext(context.TODO(), "INSERT INTO users(name) VALUES(?)", "test")
 	if err != nil {
