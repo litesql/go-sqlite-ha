@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	db1, err := sql.Open("sqlite-ha", "file:_examples/shards/shard1.db?_journal=WAL&_timeout=5000")
+	db1, err := sql.Open("sqlite-ha", "file:_examples/shards/shard1.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		panic(err)
 	}
@@ -23,7 +23,7 @@ func main() {
 		panic(err)
 	}
 
-	db2, err := sql.Open("sqlite-ha", "file:_examples/shards/shard2.db?_journal=WAL&_timeout=5000&queryRouter=shard[0-9]\\.db")
+	db2, err := sql.Open("sqlite-ha", "file:_examples/shards/shard2.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&queryRouter=shard[0-9]\\.db")
 	if err != nil {
 		panic(err)
 	}
@@ -73,7 +73,7 @@ func main() {
 		fmt.Printf("ID=%d Name=%s\n", id, name)
 	}
 
-	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=.* */ avg(x), count(*), min(rowid), max(rowid+1), name FROM users GROUP BY name")
+	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=.* */ avg(x), count(*), min(rowid), max(rowid+1), group_concat(DISTINCT name) FROM users")
 	if err != nil {
 		panic(err)
 	}
