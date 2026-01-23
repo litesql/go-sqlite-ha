@@ -48,6 +48,7 @@ type Conn struct {
 
 	txseqTracker ha.TxSeqTracker
 	timeout      time.Duration
+	token        string
 
 	invalid bool
 
@@ -360,7 +361,7 @@ func (c *Conn) start() error {
 		c.grpcClientConn.Close()
 	}
 	var err error
-	c.grpcClientConn, err = grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	c.grpcClientConn, err = grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithPerRPCCredentials(grpcCredentials{token: c.token}))
 	if err != nil {
 		slog.Debug("connect to grpc", "target", target, "error", err)
 		return driver.ErrBadConn
@@ -391,6 +392,11 @@ func (c *Conn) start() error {
 				st, ok := status.FromError(err)
 				if ok && st.Code() != codes.Canceled {
 					slog.Debug("failed to receive message", "error", err)
+					go func() {
+						c.resCh <- &sqlv1.QueryResponse{
+							Error: err.Error(),
+						}
+					}()
 				}
 				return
 			}
@@ -416,6 +422,20 @@ func (c *Conn) start() error {
 	}()
 
 	return nil
+}
+
+type grpcCredentials struct {
+	token string
+}
+
+func (c grpcCredentials) GetRequestMetadata(ctx context.Context, in ...string) (map[string]string, error) {
+	return map[string]string{
+		"authorization": c.token,
+	}, nil
+}
+
+func (c grpcCredentials) RequireTransportSecurity() bool {
+	return false
 }
 
 type result struct {

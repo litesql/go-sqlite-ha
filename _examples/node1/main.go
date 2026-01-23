@@ -17,6 +17,7 @@ func main() {
 	c, err := sqliteha.NewConnector("file:_examples/node1/my.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
 		ha.WithName("node1"),
 		ha.WithGrpcPort(5001),
+		ha.WithGrpcToken("secret-token"),
 		ha.WithEmbeddedNatsConfig(&ha.EmbeddedNatsConfig{
 			Port: 4223,
 		}),
