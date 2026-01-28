@@ -68,16 +68,7 @@ func main() {
 
 ## Configuration
 
-| Connector option | DSN param | Description | Default |
-|------------------|-----------|-------------|---------|
-| WithName | name   | Unique node name | $HOSTNAME |
-| WithReplicationURL| replicationURL | NATS connection URL. (nats://localhost:4222) | |
-| WithEmbeddedNatsConfig | <ul><li>natsPort</li><li>natsStoreDir</li><li>natsConfigFile</li></ul> | NATS embedded server config |
-| WithDisableDDLSync | disableDDLSync| Disable replication of DDL commands | | 
-| WithPublisherTimeout | publisherTimeout | Publisher timeout | 15s |
-| WithChangeSetInterceptor | | Customize the replication behaviour |
-
-- Check out all options at [option.go](https://github.com/litesql/go-ha/blob/main/option.go) file.
+[See options available](https://github.com/litesql/go-ha?tab=readme-ov-file#options)
 
 ## Projects using go-sqlite-ha
 
