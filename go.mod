@@ -3,12 +3,13 @@ module github.com/litesql/go-sqlite-ha
 go 1.25
 
 require (
-	github.com/litesql/go-ha v0.7.1
+	github.com/litesql/go-ha v0.8.0
 	google.golang.org/grpc v1.78.0
 	modernc.org/sqlite v1.44.3
 )
 
 require (
+	connectrpc.com/connect v1.19.1 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
@@ -22,11 +23,11 @@ require (
 	github.com/nats-io/jwt/v2 v2.8.0 // indirect
 	github.com/nats-io/nats-server/v2 v2.12.4 // indirect
 	github.com/nats-io/nats.go v1.48.0 // indirect
-	github.com/nats-io/nkeys v0.4.12 // indirect
+	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rqlite/sql v0.0.0-20260116131802-a0234dd98904 // indirect
+	github.com/rqlite/sql v0.0.0-20260129012909-a110ae1f061e // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
 	golang.org/x/net v0.49.0 // indirect
