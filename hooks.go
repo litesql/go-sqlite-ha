@@ -28,6 +28,7 @@ type connHooksProvider struct {
 	txseqTrackerProvider ha.TxSeqTrackerProvider
 	grpcTimeout          time.Duration
 	grpcToken            string
+	grpcInsecure         bool
 	queryRouter          *regexp.Regexp
 }
 
@@ -42,6 +43,7 @@ func newConnHooksProvider(cfg ha.ConnHooksConfig) *connHooksProvider {
 		leader:               cfg.Leader,
 		grpcTimeout:          cfg.GrpcTimeout,
 		grpcToken:            cfg.GrpcToken,
+		grpcInsecure:         cfg.GrpcInsecure,
 		queryRouter:          cfg.QueryRouter,
 	}
 }
@@ -66,6 +68,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
 		txseqTracker:   p.txseqTrackerProvider(),
 		timeout:        p.grpcTimeout,
 		token:          p.grpcToken,
+		insecure:       p.grpcInsecure,
 		queryRouter:    p.queryRouter,
 	}
 	return conn, conn.start()

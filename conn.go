@@ -2,6 +2,7 @@ package sqliteha
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	haconnect "github.com/litesql/go-ha/connect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
@@ -49,6 +51,7 @@ type Conn struct {
 	txseqTracker ha.TxSeqTracker
 	timeout      time.Duration
 	token        string
+	insecure     bool
 
 	invalid bool
 
@@ -360,7 +363,18 @@ func (c *Conn) start() error {
 		c.grpcClientConn.Close()
 	}
 	var err error
-	c.grpcClientConn, err = grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithPerRPCCredentials(grpcCredentials{token: c.token}))
+	var dialOpts []grpc.DialOption
+
+	if c.insecure {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	} else {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
+	}
+
+	if c.token != "" {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(grpcCredentials{token: c.token}))
+	}
+	c.grpcClientConn, err = grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		slog.Debug("connect to grpc", "target", target, "error", err)
 		return driver.ErrBadConn
@@ -405,17 +419,35 @@ func (c *Conn) start() error {
 
 	go func() {
 		sesisonTarget := target
-		for req := range c.reqCh {
-			err := stream.Send(req)
-			if err != nil {
-				c.currentRedirectTarget = ""
-				c.activeTransaction = false
-				slog.Debug("failed to send message", "error", err)
-				if c.currentRedirectTarget == sesisonTarget {
-					c.invalid = true
+		for {
+			select {
+			case <-time.After(25 * time.Second):
+				err := stream.Send(&sqlv1.QueryRequest{
+					Type: sqlv1.QueryType_QUERY_TYPE_PING,
+				})
+				if err != nil {
 					c.currentRedirectTarget = ""
+					c.activeTransaction = false
+					slog.Debug("failed to send ping", "error", err)
+					if c.currentRedirectTarget == sesisonTarget {
+						c.invalid = true
+						c.currentRedirectTarget = ""
+					}
+					return
 				}
-				return
+				<-c.resCh // wait for pong
+			case req := <-c.reqCh:
+				err := stream.Send(req)
+				if err != nil {
+					c.currentRedirectTarget = ""
+					c.activeTransaction = false
+					slog.Debug("failed to send message", "error", err)
+					if c.currentRedirectTarget == sesisonTarget {
+						c.invalid = true
+						c.currentRedirectTarget = ""
+					}
+					return
+				}
 			}
 		}
 	}()
