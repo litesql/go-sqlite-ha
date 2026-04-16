@@ -2,8 +2,6 @@ module github.com/litesql/go-sqlite-ha
 
 go 1.25.0
 
-replace github.com/litesql/go-ha => ../go-ha
-
 require (
 	github.com/litesql/go-ha v0.10.6
 	google.golang.org/grpc v1.80.0
