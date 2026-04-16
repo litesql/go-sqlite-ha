@@ -357,6 +357,7 @@ func (c *Conn) start() error {
 	if target == c.currentRedirectTarget {
 		return nil
 	}
+
 	c.currentRedirectTarget = target
 
 	if c.grpcClientConn != nil {

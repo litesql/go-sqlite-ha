@@ -54,8 +54,15 @@ type ConnHooksRegister interface {
 	RegisterRollbackHook(sqlite.RollbackHookFn)
 }
 
-func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
+func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector) (driver.Conn, error) {
 	sqliteConn, _ := c.(SQLiteConn)
+	// Register the ha_history virtual table module. --- IGNORED because modernc.org/sqlite/vtab couldn't register module for an openned connection ---
+	/*
+		err := vtab.RegisterModule(nil, "ha_history", &historyModule{connector: connector})
+		if err != nil {
+			return nil, fmt.Errorf("failed to register ha_history vtab module: %w", err)
+		}
+	*/
 	enableCDCHooks(sqliteConn, p.nodeName, p.replicationID, p.publisher, p.cdcPublisher)
 	conn := &Conn{
 		SQLiteConn:     sqliteConn,
@@ -96,11 +103,11 @@ func (p *connHooksProvider) EnableHooks(conn *sql.Conn) error {
 	return sconn.start()
 }
 
-func enableCDCHooks(sconn SQLiteConn, nodeName, filename string, publisher ha.Publisher, cdc ha.CDCPublisher) {
+func enableCDCHooks(sconn SQLiteConn, nodeName, replicationID string, publisher ha.Publisher, cdc ha.CDCPublisher) {
 	changeSetSessionsMu.Lock()
 	defer changeSetSessionsMu.Unlock()
 
-	cs := ha.NewChangeSet(nodeName, filename)
+	cs := ha.NewChangeSet(nodeName, replicationID)
 	changeSetSessions[sconn] = cs
 	sconn.RegisterPreUpdateHook(func(d sqlite.SQLitePreUpdateData) {
 		change, ok := getChange(&d)
