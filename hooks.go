@@ -103,6 +103,60 @@ func (p *connHooksProvider) EnableHooks(conn *sql.Conn) error {
 	return sconn.start()
 }
 
+type tableSchema struct {
+	columns, types, pkColumns []string
+}
+
+var tableSchemaCache = make(map[string]map[string]*tableSchema)
+
+func clearTableSchemaCache(replicationID string) {
+	delete(tableSchemaCache, replicationID)
+}
+
+func getTableSchema(sconn SQLiteConn, replicationID string, database string, table string) (*tableSchema, error) {
+	key := fmt.Sprintf("%s.%s", database, table)
+	replicationTables, ok := tableSchemaCache[replicationID]
+	if !ok {
+		replicationTables = map[string]*tableSchema{}
+		tableSchemaCache[replicationID] = replicationTables
+	} else {
+		if schema, ok := replicationTables[key]; ok {
+			return schema, nil
+		}
+	}
+	var schema tableSchema
+	rows, err := sconn.QueryContext(context.Background(), fmt.Sprintf("SELECT name, type, pk FROM %s.PRAGMA_TABLE_INFO('%s') ORDER BY cid", database, table), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for {
+		dataRow := []driver.Value{new(string), new(string), new(int64)}
+
+		err := rows.Next(dataRow)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				slog.Error("failed to read table columns", "error", err, "table", table)
+			}
+			break
+		}
+		if v, ok := dataRow[0].(string); ok {
+			schema.columns = append(schema.columns, v)
+		} else {
+			continue
+		}
+		if v, ok := dataRow[1].(string); ok {
+			schema.types = append(schema.types, v)
+		}
+		if v, ok := dataRow[2].(int64); ok && v > 0 {
+			schema.pkColumns = append(schema.pkColumns, dataRow[0].(string))
+		}
+	}
+	replicationTables[key] = &schema
+	return &schema, nil
+
+}
+
 func enableCDCHooks(sconn SQLiteConn, nodeName, replicationID string, publisher ha.Publisher, cdc ha.CDCPublisher) {
 	changeSetSessionsMu.Lock()
 	defer changeSetSessionsMu.Unlock()
@@ -114,38 +168,14 @@ func enableCDCHooks(sconn SQLiteConn, nodeName, replicationID string, publisher 
 		if !ok {
 			return
 		}
-		rows, err := sconn.QueryContext(context.Background(), fmt.Sprintf("SELECT name, type, pk FROM %s.PRAGMA_TABLE_INFO('%s') ORDER BY cid", change.Database, change.Table), nil)
+		schema, err := getTableSchema(sconn, replicationID, change.Database, change.Table)
 		if err != nil {
 			slog.Error("failed to read columns", "error", err, "database", change.Database, "table", change.Table)
 			return
 		}
-		defer rows.Close()
-		var columns, types, pkColumns []string
-		for {
-			dataRow := []driver.Value{new(string), new(string), new(int64)}
-
-			err := rows.Next(dataRow)
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					slog.Error("failed to read table columns", "error", err, "table", change.Table)
-				}
-				break
-			}
-			if v, ok := dataRow[0].(string); ok {
-				columns = append(columns, v)
-			} else {
-				continue
-			}
-			if v, ok := dataRow[1].(string); ok {
-				types = append(types, v)
-			}
-			if v, ok := dataRow[2].(int64); ok && v > 0 {
-				pkColumns = append(pkColumns, dataRow[0].(string))
-			}
-		}
-		change.Columns = columns
-		change.PKColumns = pkColumns
-		for i, t := range types {
+		change.Columns = schema.columns
+		change.PKColumns = schema.pkColumns
+		for i, t := range schema.types {
 			if t != "BLOB" {
 				if i < len(change.OldValues) && change.OldValues[i] != nil {
 					change.OldValues[i] = convert(change.OldValues[i])
