@@ -69,7 +69,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		modifies bool
 		stmts    []*ha.Statement
 	)
-	if c.redirectToGrpc(true) || !c.disableDDLSync {
+	if c.redirectToGrpc(true) || !c.disableDDLSync || c.proxiedDB != nil {
 		var err error
 		stmts, err = ha.Parse(ctx, query)
 		if err != nil {
@@ -144,7 +144,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		res driver.Result
 		err error
 	)
-	if c.proxiedDB != nil && !ha.LocalDB(ctx) {
+	if c.proxiedDB != nil && modifies && !ha.LocalDB(ctx) {
 		res, err = c.proxiedDB.ExecContext(ctx, query, toSqlValues(args)...)
 	} else {
 		res, err = c.SQLiteConn.ExecContext(ctx, query, args)
@@ -171,7 +171,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		modifies bool
 		stmts    []*ha.Statement
 	)
-	if c.redirectToGrpc(true) || !c.disableDDLSync {
+	if c.redirectToGrpc(true) || !c.disableDDLSync || c.proxiedDB != nil {
 		var err error
 		stmts, err = ha.Parse(ctx, query)
 		if err != nil {
@@ -220,7 +220,7 @@ LOOP:
 			})
 		}
 	}
-	if c.proxiedDB != nil {
+	if c.proxiedDB != nil && modifies {
 		rows, err := c.proxiedDB.QueryContext(ctx, query, toSqlValues(args)...)
 		if err != nil {
 			return nil, err
