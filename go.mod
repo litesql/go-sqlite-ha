@@ -3,7 +3,7 @@ module github.com/litesql/go-sqlite-ha
 go 1.25.0
 
 require (
-	github.com/litesql/go-ha v0.11.3
+	github.com/litesql/go-ha v0.11.4
 	google.golang.org/grpc v1.80.0
 	modernc.org/sqlite v1.50.0
 )
@@ -16,12 +16,12 @@ require (
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/minio/highwayhash v1.0.4 // indirect
 	github.com/nats-io/graft v0.0.0-20260325174230-f9e6710ae36e // indirect
 	github.com/nats-io/jwt/v2 v2.8.1 // indirect
-	github.com/nats-io/nats-server/v2 v2.12.8 // indirect
+	github.com/nats-io/nats-server/v2 v2.14.0 // indirect
 	github.com/nats-io/nats.go v1.51.0 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect

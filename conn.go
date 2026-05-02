@@ -55,6 +55,8 @@ type Conn struct {
 
 	invalid bool
 
+	proxiedDB *sql.DB
+
 	queryRouter *regexp.Regexp
 }
 
@@ -138,7 +140,15 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 			return nil, err
 		}
 	}
-	res, err := c.SQLiteConn.ExecContext(ctx, query, args)
+	var (
+		res driver.Result
+		err error
+	)
+	if c.proxiedDB != nil && !ha.LocalDB(ctx) {
+		res, err = c.proxiedDB.ExecContext(ctx, query, toSqlValues(args)...)
+	} else {
+		res, err = c.SQLiteConn.ExecContext(ctx, query, args)
+	}
 	if err != nil && ddlCommands.Len() > 0 {
 		removeLastChange(c.SQLiteConn)
 	}
@@ -154,7 +164,7 @@ func (c *Conn) IsValid() bool {
 }
 
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if query == "SELECT received_seq FROM ha_stats WHERE subject = ?" {
+	if ha.LocalDB(ctx) {
 		return c.SQLiteConn.QueryContext(ctx, query, args)
 	}
 	var (
@@ -210,7 +220,68 @@ LOOP:
 			})
 		}
 	}
+	if c.proxiedDB != nil {
+		rows, err := c.proxiedDB.QueryContext(ctx, query, toSqlValues(args)...)
+		if err != nil {
+			return nil, err
+		}
+
+		columns, err := rows.Columns()
+		if err != nil {
+			return nil, err
+		}
+
+		columnsCount := len(columns)
+		if columnsCount == 0 {
+			return nil, fmt.Errorf("no columns")
+		}
+
+		dataRows := make(chan []any, 1)
+		go func() {
+			defer func() {
+				rows.Close()
+				close(dataRows)
+			}()
+			for rows.Next() {
+				values := make([]any, columnsCount)
+				for i := range values {
+					values[i] = &values[i]
+				}
+				if err := rows.Scan(values...); err != nil {
+					return
+				}
+				dataRows <- values
+			}
+		}()
+
+		return &driverRows{columns: columns, data: dataRows}, nil
+	}
 	return c.SQLiteConn.QueryContext(ctx, query, args)
+}
+
+type driverRows struct {
+	columns []string
+	data    chan []any
+	index   int
+}
+
+func (r *driverRows) Columns() []string {
+	return r.columns
+}
+
+func (r *driverRows) Next(dest []driver.Value) error {
+	values, ok := <-r.data
+	if !ok {
+		return io.EOF
+	}
+	for i := range len(values) {
+		dest[i] = values[i]
+	}
+	return nil
+}
+
+func (r *driverRows) Close() error {
+	return nil
 }
 
 func (c *Conn) ignoreQueryRouter(ctx context.Context) bool {
@@ -240,15 +311,28 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 				return nil, errors.New(res.Error)
 			}
 			c.activeTransaction = true
-			return &tx{
+			return &txGRPC{
 				Conn: c,
 			}, nil
 		case <-ctx.Done():
 			return nil, driver.ErrBadConn
 		}
 	}
+	if c.proxiedDB != nil && !ha.LocalDB(ctx) {
+		return c.proxiedDB.BeginTx(ctx, &sql.TxOptions{
+			Isolation: sql.IsolationLevel(opts.Isolation),
+			ReadOnly:  opts.ReadOnly,
+		})
+	}
+	tx, err := c.SQLiteConn.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
 	c.activeTransaction = true
-	return c.SQLiteConn.BeginTx(ctx, opts)
+	return &txLocal{
+		Conn: c,
+		tx:   tx,
+	}, nil
 }
 
 func (c *Conn) Begin() (driver.Tx, error) {
@@ -296,11 +380,11 @@ func (c *Conn) redirectQuery(ctx context.Context, query string, args []driver.Na
 	}
 }
 
-type tx struct {
+type txGRPC struct {
 	*Conn
 }
 
-func (tx *tx) Commit() error {
+func (tx *txGRPC) Commit() error {
 	select {
 	case tx.reqCh <- &sqlv1.QueryRequest{
 		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
@@ -319,7 +403,7 @@ func (tx *tx) Commit() error {
 	return nil
 }
 
-func (tx *tx) Rollback() error {
+func (tx *txGRPC) Rollback() error {
 	select {
 	case tx.reqCh <- &sqlv1.QueryRequest{
 		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
@@ -335,6 +419,21 @@ func (tx *tx) Rollback() error {
 		return ErrTimedOut
 	}
 	return nil
+}
+
+type txLocal struct {
+	*Conn
+	tx driver.Tx
+}
+
+func (tx *txLocal) Commit() error {
+	tx.Conn.activeTransaction = false
+	return tx.tx.Commit()
+}
+
+func (tx *txLocal) Rollback() error {
+	tx.Conn.activeTransaction = false
+	return tx.tx.Rollback()
 }
 
 func (c *Conn) ResetSession(ctx context.Context) error {
@@ -583,6 +682,24 @@ func toNamedValues(vals []driver.Value) (r []driver.NamedValue) {
 	r = make([]driver.NamedValue, len(vals))
 	for i, val := range vals {
 		r[i] = driver.NamedValue{Value: val, Ordinal: i + 1}
+	}
+	return r
+}
+
+func toSqlValues(vals []driver.NamedValue) (r []any) {
+	if len(vals) == 0 {
+		return nil
+	}
+	if vals[0].Name != "" {
+		r = make([]any, len(vals))
+		for i, val := range vals {
+			r[i] = sql.Named(val.Name, val.Value)
+		}
+		return r
+	}
+	r = make([]any, len(vals))
+	for _, val := range vals {
+		r[val.Ordinal-1] = val.Value
 	}
 	return r
 }
