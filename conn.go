@@ -73,6 +73,24 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		var err error
 		stmts, err = ha.Parse(ctx, query)
 		if err != nil {
+			if !ha.LocalDB(ctx) {
+				if c.redirectToGrpc(true) {
+					slog.Debug("invalid sqlite syntax, redirecting to leader", "error", err)
+					res, err2 := c.redirectExecToGrpc(ctx, query, args)
+					if err2 != nil {
+						return nil, errors.Join(err, err2)
+					}
+					return res, nil
+				} else if c.proxiedDB != nil {
+					slog.Debug("invalid sqlite syntax, redirecting to proxied db", "error", err)
+					res, err2 := c.proxiedDB.ExecContext(ctx, query, toSqlValues(args)...)
+					if err2 != nil {
+						return nil, errors.Join(err, err2)
+					}
+					return res, nil
+				}
+			}
+
 			return nil, err
 		}
 
@@ -84,46 +102,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		}
 	}
 	if c.redirectToGrpc(modifies) {
-		slog.Debug("Redirecting", "to", c.leader.RedirectTarget(), "query", query)
-		params := make([]*sqlv1.NamedValue, len(args))
-		for i, arg := range args {
-			val, err := haconnect.ToAnypb(arg.Value)
-			if err != nil {
-				return nil, err
-			}
-			params[i] = &sqlv1.NamedValue{
-				Name:    arg.Name,
-				Ordinal: int64(arg.Ordinal),
-				Value:   val,
-			}
-		}
-		ctx, cancel := context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-
-		select {
-		case c.reqCh <- &sqlv1.QueryRequest{
-			Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
-			Sql:           query,
-			Params:        params,
-			ReplicationId: c.replicationID,
-		}:
-			res := <-c.resCh
-			if res.Error != "" {
-				return nil, errors.New(res.Error)
-			}
-			if res.Txseq > 0 {
-				c.txseq = res.Txseq
-			}
-			return result{
-				lastInsertId: res.LastInsertId,
-				rowsAffected: res.RowsAffected,
-			}, nil
-		case <-ctx.Done():
-			if !c.activeTransaction {
-				return nil, driver.ErrBadConn
-			}
-			return nil, ErrTimedOut
-		}
+		return c.redirectExecToGrpc(ctx, query, args)
 	}
 
 	var ddlCommands strings.Builder
@@ -175,6 +154,21 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		var err error
 		stmts, err = ha.Parse(ctx, query)
 		if err != nil {
+			if c.redirectToGrpc(true) {
+				slog.Debug("invalid sqlite syntax, redirecting to leader", "error", err)
+				res, err2 := c.redirectQuery(ctx, query, args)
+				if err2 != nil {
+					return nil, errors.Join(err, err2)
+				}
+				return res, nil
+			} else if c.proxiedDB != nil {
+				slog.Debug("invalid sqlite syntax, redirecting to proxied db", "error", err)
+				res, err2 := c.redirectQueryToProxied(ctx, query, args)
+				if err2 != nil {
+					return nil, errors.Join(err, err2)
+				}
+				return res, nil
+			}
 			return nil, err
 		}
 
@@ -221,42 +215,89 @@ LOOP:
 		}
 	}
 	if c.proxiedDB != nil && modifies {
-		rows, err := c.proxiedDB.QueryContext(ctx, query, toSqlValues(args)...)
-		if err != nil {
-			return nil, err
-		}
-
-		columns, err := rows.Columns()
-		if err != nil {
-			return nil, err
-		}
-
-		columnsCount := len(columns)
-		if columnsCount == 0 {
-			return nil, fmt.Errorf("no columns")
-		}
-
-		dataRows := make(chan []any, 1)
-		go func() {
-			defer func() {
-				rows.Close()
-				close(dataRows)
-			}()
-			for rows.Next() {
-				values := make([]any, columnsCount)
-				for i := range values {
-					values[i] = &values[i]
-				}
-				if err := rows.Scan(values...); err != nil {
-					return
-				}
-				dataRows <- values
-			}
-		}()
-
-		return &driverRows{columns: columns, data: dataRows}, nil
+		return c.redirectQueryToProxied(ctx, query, args)
 	}
 	return c.SQLiteConn.QueryContext(ctx, query, args)
+}
+
+func (c *Conn) redirectExecToGrpc(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	slog.Debug("Redirecting", "to", c.leader.RedirectTarget(), "query", query)
+	params := make([]*sqlv1.NamedValue, len(args))
+	for i, arg := range args {
+		val, err := haconnect.ToAnypb(arg.Value)
+		if err != nil {
+			return nil, err
+		}
+		params[i] = &sqlv1.NamedValue{
+			Name:    arg.Name,
+			Ordinal: int64(arg.Ordinal),
+			Value:   val,
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	select {
+	case c.reqCh <- &sqlv1.QueryRequest{
+		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
+		Sql:           query,
+		Params:        params,
+		ReplicationId: c.replicationID,
+	}:
+		res := <-c.resCh
+		if res.Error != "" {
+			return nil, errors.New(res.Error)
+		}
+		if res.Txseq > 0 {
+			c.txseq = res.Txseq
+		}
+		return result{
+			lastInsertId: res.LastInsertId,
+			rowsAffected: res.RowsAffected,
+		}, nil
+	case <-ctx.Done():
+		if !c.activeTransaction {
+			return nil, driver.ErrBadConn
+		}
+		return nil, ErrTimedOut
+	}
+}
+
+func (c *Conn) redirectQueryToProxied(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	rows, err := c.proxiedDB.QueryContext(ctx, query, toSqlValues(args)...)
+	if err != nil {
+		return nil, err
+	}
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	columnsCount := len(columns)
+	if columnsCount == 0 {
+		return nil, fmt.Errorf("no columns")
+	}
+
+	dataRows := make(chan []any, 1)
+	go func() {
+		defer func() {
+			rows.Close()
+			close(dataRows)
+		}()
+		for rows.Next() {
+			values := make([]any, columnsCount)
+			for i := range values {
+				values[i] = &values[i]
+			}
+			if err := rows.Scan(values...); err != nil {
+				return
+			}
+			dataRows <- values
+		}
+	}()
+
+	return &driverRows{columns: columns, data: dataRows}, nil
 }
 
 type driverRows struct {
