@@ -352,11 +352,17 @@ func (c *Conn) redirectQueryToProxied(ctx context.Context, query string, args []
 		}()
 		for rows.Next() {
 			values := make([]any, columnsCount)
+			valuePtrs := make([]any, columnsCount)
 			for i := range values {
-				values[i] = &values[i]
+				valuePtrs[i] = &values[i]
 			}
-			if err := rows.Scan(values...); err != nil {
+			if err := rows.Scan(valuePtrs...); err != nil {
 				return
+			}
+			for i, val := range values {
+				if b, ok := val.([]uint8); ok {
+					values[i] = string(b)
+				}
 			}
 			dataRows <- values
 		}
