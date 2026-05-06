@@ -31,6 +31,11 @@ type contextKey int
 
 const ignoreQueryRouterKey contextKey = iota
 
+type ProxiedQuerierExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 type Conn struct {
 	SQLiteConn
 	disableDDLSync bool
@@ -55,7 +60,11 @@ type Conn struct {
 
 	invalid bool
 
-	proxiedDB *sql.DB
+	proxiedDB                 *sql.DB
+	proxiedTxExecer           ProxiedQuerierExecer
+	proxiedPositionProvider   ha.ProxiedPositionProvider
+	currentWritePosition      uint64
+	latestTransactionPosition uint64
 
 	queryRouter *regexp.Regexp
 }
@@ -83,9 +92,11 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 					return res, nil
 				} else if c.proxiedDB != nil {
 					slog.Debug("invalid sqlite syntax, redirecting to proxied db", "error", err)
-					res, err2 := c.proxiedDB.ExecContext(ctx, query, toSqlValues(args)...)
+					res, err2 := c.proxiedQuerierExecer().ExecContext(ctx, query, toSqlValues(args)...)
 					if err2 != nil {
 						return nil, errors.Join(err, err2)
+					} else {
+						c.updateProxiedPosition(ctx)
 					}
 					return res, nil
 				}
@@ -124,7 +135,10 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		err error
 	)
 	if c.proxiedDB != nil && modifies && !ha.LocalDB(ctx) {
-		res, err = c.proxiedDB.ExecContext(ctx, query, toSqlValues(args)...)
+		res, err = c.proxiedQuerierExecer().ExecContext(ctx, query, toSqlValues(args)...)
+		if err == nil {
+			c.updateProxiedPosition(ctx)
+		}
 	} else {
 		res, err = c.SQLiteConn.ExecContext(ctx, query, args)
 	}
@@ -214,10 +228,54 @@ LOOP:
 			})
 		}
 	}
-	if c.proxiedDB != nil && modifies {
-		return c.redirectQueryToProxied(ctx, query, args)
+	if (c.proxiedDB != nil && modifies) || c.activeTransaction {
+		rows, err := c.redirectQueryToProxied(ctx, query, args)
+		if err != nil {
+			return nil, err
+		}
+		if modifies {
+			c.updateProxiedPosition(ctx)
+		}
+		return rows, err
+	}
+
+	if c.currentWritePosition == 0 {
+		return c.SQLiteConn.QueryContext(ctx, query, args)
+	}
+
+	tickerRYW := time.NewTicker(time.Millisecond)
+	defer tickerRYW.Stop()
+
+	ctxRYWTimeout, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+LOOPRYW: //RYW = Read Your Writes
+	for {
+		replicaPosition, err := c.proxiedPositionProvider.ReplicaPosition(ctx)
+		if err != nil {
+			slog.Debug("get replica position", "error", err)
+		}
+		slog.Debug("checking positions", "replica", replicaPosition, "currentWritePosition", c.currentWritePosition)
+		if replicaPosition >= c.currentWritePosition {
+			break LOOPRYW
+		}
+
+		select {
+		case <-ctxRYWTimeout.Done():
+			return c.redirectQueryToProxied(ctx, query, args)
+		case <-tickerRYW.C:
+		}
 	}
 	return c.SQLiteConn.QueryContext(ctx, query, args)
+}
+
+func (c *Conn) updateProxiedPosition(ctx context.Context) {
+	if c.proxiedPositionProvider == nil {
+		return
+	}
+	position, err := c.proxiedPositionProvider.SourcePosition(ctx)
+	if err == nil {
+		c.currentWritePosition = position
+	}
 }
 
 func (c *Conn) redirectExecToGrpc(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -263,8 +321,15 @@ func (c *Conn) redirectExecToGrpc(ctx context.Context, query string, args []driv
 	}
 }
 
+func (c *Conn) proxiedQuerierExecer() ProxiedQuerierExecer {
+	if c.proxiedTxExecer != nil {
+		return c.proxiedTxExecer
+	}
+	return c.proxiedDB
+}
+
 func (c *Conn) redirectQueryToProxied(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	rows, err := c.proxiedDB.QueryContext(ctx, query, toSqlValues(args)...)
+	rows, err := c.proxiedQuerierExecer().QueryContext(ctx, query, toSqlValues(args)...)
 	if err != nil {
 		return nil, err
 	}
@@ -360,10 +425,20 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		}
 	}
 	if c.proxiedDB != nil && !ha.LocalDB(ctx) {
-		return c.proxiedDB.BeginTx(ctx, &sql.TxOptions{
+		proxiedTx, err := c.proxiedDB.BeginTx(ctx, &sql.TxOptions{
 			Isolation: sql.IsolationLevel(opts.Isolation),
 			ReadOnly:  opts.ReadOnly,
 		})
+		if err != nil {
+			return nil, err
+		}
+		c.proxiedTxExecer = proxiedTx
+		c.activeTransaction = true
+		c.latestTransactionPosition = c.currentWritePosition
+		return &txProxied{
+			Tx: proxiedTx,
+			c:  c,
+		}, nil
 	}
 	tx, err := c.SQLiteConn.BeginTx(ctx, opts)
 	if err != nil {
@@ -371,8 +446,8 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	}
 	c.activeTransaction = true
 	return &txLocal{
-		Conn: c,
-		tx:   tx,
+		Tx: tx,
+		c:  c,
 	}, nil
 }
 
@@ -463,22 +538,43 @@ func (tx *txGRPC) Rollback() error {
 }
 
 type txLocal struct {
-	*Conn
-	tx driver.Tx
+	driver.Tx
+	c *Conn
 }
 
 func (tx *txLocal) Commit() error {
-	tx.Conn.activeTransaction = false
-	return tx.tx.Commit()
+	tx.c.activeTransaction = false
+	return tx.Tx.Commit()
 }
 
 func (tx *txLocal) Rollback() error {
-	tx.Conn.activeTransaction = false
-	return tx.tx.Rollback()
+	tx.c.activeTransaction = false
+	return tx.Tx.Rollback()
+}
+
+type txProxied struct {
+	*sql.Tx
+	c *Conn
+}
+
+func (tx *txProxied) Commit() error {
+	tx.c.activeTransaction = false
+	tx.c.proxiedTxExecer = nil
+	return tx.Tx.Commit()
+}
+
+func (tx *txProxied) Rollback() error {
+	tx.c.activeTransaction = false
+	tx.c.proxiedTxExecer = nil
+	tx.c.currentWritePosition = tx.c.latestTransactionPosition
+	return tx.Tx.Rollback()
 }
 
 func (c *Conn) ResetSession(ctx context.Context) error {
 	c.activeTransaction = false
+	c.currentWritePosition = 0
+	c.latestTransactionPosition = 0
+	c.proxiedTxExecer = nil
 	return nil
 }
 
