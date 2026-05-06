@@ -228,7 +228,7 @@ LOOP:
 			})
 		}
 	}
-	if (c.proxiedDB != nil && modifies) || c.activeTransaction {
+	if c.proxiedDB != nil && (modifies || c.activeTransaction) {
 		rows, err := c.redirectQueryToProxied(ctx, query, args)
 		if err != nil {
 			return nil, err
@@ -239,7 +239,7 @@ LOOP:
 		return rows, err
 	}
 
-	if c.currentWritePosition == 0 {
+	if c.currentWritePosition == 0 || c.proxiedDB == nil {
 		return c.SQLiteConn.QueryContext(ctx, query, args)
 	}
 
