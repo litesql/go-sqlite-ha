@@ -68,7 +68,7 @@ func main() {
 
 ## Configuration
 
-[See options available](https://github.com/litesql/go-ha?tab=readme-ov-file#options)
+[See options available](https://github.com/litesql/go-ha?tab=readme-ov-file#configuration-options)
 
 ## Projects using go-sqlite-ha
 
