@@ -3,7 +3,7 @@ module github.com/litesql/go-sqlite-ha
 go 1.26.0
 
 require (
-	github.com/litesql/go-ha v0.12.0
+	github.com/litesql/go-ha v0.12.1
 	google.golang.org/grpc v1.83.2
 	modernc.org/sqlite v1.58.0
 )
@@ -33,7 +33,7 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260908043556-f8649ddbbfe6 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
