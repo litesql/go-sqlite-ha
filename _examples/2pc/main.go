@@ -20,6 +20,7 @@ func main() {
 			"http://localhost:5001": "secret-token",
 		},
 		5*time.Second,
+		nil,
 	)
 	if err != nil {
 		panic(err)
