@@ -38,20 +38,12 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 	*/
 	enableCDCHooks(sqliteConn, p.Connector)
 	conn := &Conn{
-		SQLiteConn:              sqliteConn,
-		disableDDLSync:          p.DisableDDLSync(),
-		enableRedirect:          true,
-		replicationID:           p.ReplicationID(),
-		leader:                  p.LeaderProvider(),
-		reqCh:                   make(chan *sqlv1.QueryRequest),
-		resCh:                   make(chan *sqlv1.QueryResponse),
-		txseqTracker:            p.Subscriber(),
-		timeout:                 p.GrpcTimeout(),
-		token:                   p.GrpcToken(),
-		insecure:                p.GrpcInsecure(),
-		proxiedDB:               connector.ProxiedDB(),
-		proxiedPositionProvider: connector.ProxiedPositionProvider(),
-		queryRouter:             p.QueryRouter(),
+		SQLiteConn:     sqliteConn,
+		connector:      p.Connector,
+		enableRedirect: true,
+		reqCh:          make(chan *sqlv1.QueryRequest),
+		resCh:          make(chan *sqlv1.QueryResponse),
+		txseqTracker:   p.Subscriber(),
 	}
 	return conn, conn.start()
 }
