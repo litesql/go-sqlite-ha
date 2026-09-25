@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"time"
 
 	"github.com/litesql/go-ha"
 	sqliteha "github.com/litesql/go-sqlite-ha"
@@ -15,19 +14,8 @@ import (
 // go run ./_examples/node1
 func main() {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
-	publisher, err := ha.NewTwoPhaseCommitPublisher(
-		map[string]string{
-			"http://localhost:5001": "secret-token",
-		},
-		5*time.Second,
-		nil,
-	)
-	if err != nil {
-		panic(err)
-	}
-	c, err := sqliteha.NewConnector("file:_examples/2pc/my.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
+	c, err := sqliteha.NewConnector("file:_examples/2pc/my.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&2pcPeers=http://localhost:5001(secret-token)&2pcTimeout=3s",
 		ha.WithName("node_two_phase_commit"),
-		ha.WithReplicationPublisher(publisher),
 		ha.WithReplicationSubscriber(ha.NewNoopSubscriber()),
 		ha.WithAutoStart(true))
 	if err != nil {
@@ -39,7 +27,7 @@ func main() {
 
 	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS users(name TEXT);
-		INSERT INTO users VALUES('HA user 2PC');
+		INSERT INTO users VALUES('HA user 2PC param');
 	`)
 	if err != nil {
 		panic(err)
