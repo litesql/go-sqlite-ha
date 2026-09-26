@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/litesql/go-ha"
@@ -581,6 +582,10 @@ func (c *Conn) Close() error {
 		err = c.grpcClientConn.Close()
 	}
 	return errors.Join(err, c.SQLiteConn.Close())
+}
+
+func (c *Conn) Mutex() *sync.Mutex {
+	return c.connector.Mutex()
 }
 
 func (c *Conn) redirectToGrpc(modifies bool) bool {
