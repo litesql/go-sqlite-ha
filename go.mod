@@ -3,9 +3,9 @@ module github.com/litesql/go-sqlite-ha
 go 1.26.0
 
 require (
-	github.com/litesql/go-ha v0.13.11
+	github.com/litesql/go-ha v0.13.14
 	google.golang.org/grpc v1.84.0
-	modernc.org/sqlite v1.60.0
+	modernc.org/sqlite v1.60.1
 )
 
 require (
@@ -25,7 +25,7 @@ require (
 	github.com/nats-io/nats.go v1.54.0 // indirect
 	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
-	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rqlite/sql v0.0.0-20260224021119-1b2524a41372 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
