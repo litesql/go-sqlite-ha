@@ -3,7 +3,7 @@ module github.com/litesql/go-sqlite-ha
 go 1.26.0
 
 require (
-	github.com/litesql/go-ha v0.13.14
+	github.com/litesql/go-ha v0.13.16
 	google.golang.org/grpc v1.84.0
 	modernc.org/sqlite v1.60.1
 )
