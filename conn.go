@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -70,7 +71,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		modifies bool
 		stmts    []*ha.Statement
 	)
-	if c.redirectToGrpc(true) || !c.connector.DisableDDLSync() || c.connector.ProxiedDB() != nil {
+	if c.redirectToGrpc(true) || !c.connector.DisableDDLSync() || c.connector.ProxiedDB() != nil || c.twoPhaseEnabled() {
 		var err error
 		stmts, err = ha.Parse(ctx, query)
 		if err != nil {
@@ -98,6 +99,9 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		}
 
 		for _, stmt := range stmts {
+			if c.twoPhaseEnabled() && isTransactionControl(stmt) {
+				return nil, errors.New("use database/sql transaction methods when two-phase commit is enabled")
+			}
 			if stmt.ModifiesDatabase() {
 				modifies = true
 				break
@@ -131,6 +135,8 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		if err == nil {
 			c.updateProxiedPosition(ctx)
 		}
+	} else if modifies && !c.activeTransaction && !ha.LocalDB(ctx) && c.twoPhaseEnabled() {
+		res, err = c.execLocalTwoPhase(ctx, query, args)
 	} else {
 		res, err = c.SQLiteConn.ExecContext(ctx, query, args)
 	}
@@ -156,7 +162,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		modifies bool
 		stmts    []*ha.Statement
 	)
-	if c.redirectToGrpc(true) || !c.connector.DisableDDLSync() || c.connector.ProxiedDB() != nil {
+	if c.redirectToGrpc(true) || !c.connector.DisableDDLSync() || c.connector.ProxiedDB() != nil || c.twoPhaseEnabled() {
 		var err error
 		stmts, err = ha.Parse(ctx, query)
 		if err != nil {
@@ -179,6 +185,9 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		}
 
 		for _, stmt := range stmts {
+			if c.twoPhaseEnabled() && isTransactionControl(stmt) {
+				return nil, errors.New("use database/sql transaction methods when two-phase commit is enabled")
+			}
 			if stmt.ModifiesDatabase() {
 				modifies = true
 				break
@@ -232,7 +241,7 @@ LOOP:
 	}
 
 	if c.currentWritePosition == 0 || c.connector.ProxiedDB() == nil {
-		return c.SQLiteConn.QueryContext(ctx, query, args)
+		return c.queryLocal(ctx, query, args, modifies)
 	}
 
 	tickerRYW := time.NewTicker(time.Millisecond)
@@ -257,7 +266,71 @@ LOOPRYW: //RYW = Read Your Writes
 		case <-tickerRYW.C:
 		}
 	}
-	return c.SQLiteConn.QueryContext(ctx, query, args)
+	return c.queryLocal(ctx, query, args, modifies)
+}
+
+func (c *Conn) twoPhaseEnabled() bool {
+	_, ok := c.connector.Publisher().(ha.TwoPhaseCommitPreparer)
+	return ok
+}
+
+func isTransactionControl(stmt *ha.Statement) bool {
+	switch stmt.Type() {
+	case ha.TypeBegin, ha.TypeCommit, ha.TypeRollback, ha.TypeSavepoint, ha.TypeRelease:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Conn) recoverTwoPhase(ctx context.Context) error {
+	if ha.LocalDB(ctx) {
+		return nil
+	}
+	if recoverer, ok := c.connector.Publisher().(interface{ RecoverTwoPhaseCommits() error }); ok {
+		return recoverer.RecoverTwoPhaseCommits()
+	}
+	return nil
+}
+
+func (c *Conn) execLocalTwoPhase(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if err := c.recoverTwoPhase(ctx); err != nil {
+		return nil, err
+	}
+	tx, err := c.SQLiteConn.BeginTx(ctx, driver.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	c.activeTransaction = true
+	res, err := c.SQLiteConn.ExecContext(ctx, query, args)
+	if err != nil {
+		c.activeTransaction = false
+		return nil, errors.Join(err, tx.Rollback())
+	}
+	if err := (&txLocal{Tx: tx, c: c, ctx: ctx}).Commit(); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (c *Conn) queryLocal(ctx context.Context, query string, args []driver.NamedValue, modifies bool) (driver.Rows, error) {
+	if !modifies || c.activeTransaction || !c.twoPhaseEnabled() || ha.LocalDB(ctx) {
+		return c.SQLiteConn.QueryContext(ctx, query, args)
+	}
+	if err := c.recoverTwoPhase(ctx); err != nil {
+		return nil, err
+	}
+	tx, err := c.SQLiteConn.BeginTx(ctx, driver.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	c.activeTransaction = true
+	rows, err := c.SQLiteConn.QueryContext(ctx, query, args)
+	if err != nil {
+		c.activeTransaction = false
+		return nil, errors.Join(err, tx.Rollback())
+	}
+	return &twoPhaseRows{Rows: rows, tx: &txLocal{Tx: tx, c: c, ctx: ctx}}, nil
 }
 
 func (c *Conn) updateProxiedPosition(ctx context.Context) {
@@ -438,15 +511,15 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 			c:  c,
 		}, nil
 	}
+	if err := c.recoverTwoPhase(ctx); err != nil {
+		return nil, err
+	}
 	tx, err := c.SQLiteConn.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 	c.activeTransaction = true
-	return &txLocal{
-		Tx: tx,
-		c:  c,
-	}, nil
+	return &txLocal{Tx: tx, c: c, ctx: ctx}, nil
 }
 
 func (c *Conn) Begin() (driver.Tx, error) {
@@ -537,17 +610,203 @@ func (tx *txGRPC) Rollback() error {
 
 type txLocal struct {
 	driver.Tx
-	c *Conn
+	c   *Conn
+	ctx context.Context
 }
 
 func (tx *txLocal) Commit() error {
+	if tx.c == nil {
+		return tx.Tx.Commit()
+	}
+	preparer, ok := tx.c.connector.Publisher().(ha.TwoPhaseCommitPreparer)
+	if !ok {
+		err := tx.Tx.Commit()
+		tx.c.activeTransaction = false
+		return err
+	}
+	cs := snapshotChangeSet(tx.c.SQLiteConn)
+	if cs == nil || len(cs.Changes) == 0 {
+		err := tx.Tx.Commit()
+		tx.c.activeTransaction = false
+		return err
+	}
+	prepared, err := preparer.PrepareTwoPhaseCommit(cs)
+	if err != nil {
+		tx.c.activeTransaction = false
+		return errors.Join(err, tx.Tx.Rollback())
+	}
+	ctx := tx.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	err = prepared.RecordCommitDecision(func(writeCtx context.Context, query string, args ...any) error {
+		if writeCtx == nil {
+			writeCtx = ctx
+		}
+		named := make([]driver.NamedValue, len(args))
+		for i, arg := range args {
+			named[i] = driver.NamedValue{Ordinal: i + 1, Value: arg}
+		}
+		_, err := tx.c.SQLiteConn.ExecContext(writeCtx, query, named)
+		return err
+	})
+	if err != nil {
+		abortErr := prepared.Abort()
+		tx.c.activeTransaction = false
+		return errors.Join(err, abortErr, tx.Tx.Rollback())
+	}
+	if err := tx.Tx.Commit(); err != nil {
+		tx.c.activeTransaction = false
+		_ = tx.Tx.Rollback()
+		committed, resolveErr := prepared.ResolveCommit()
+		if committed {
+			clearChangeSet(tx.c.SQLiteConn)
+			publishChangeSetCDC(tx.c.connector, cs)
+			if resolveErr != nil {
+				return fmt.Errorf("%w: %w", ha.ErrTwoPhaseCommitPending, resolveErr)
+			}
+			return nil
+		}
+		return errors.Join(err, resolveErr)
+	}
 	tx.c.activeTransaction = false
-	return tx.Tx.Commit()
+	clearChangeSet(tx.c.SQLiteConn)
+	commitErr := prepared.Commit()
+	publishChangeSetCDC(tx.c.connector, cs)
+	if commitErr != nil {
+		return fmt.Errorf("%w: %w", ha.ErrTwoPhaseCommitPending, commitErr)
+	}
+	return nil
 }
 
 func (tx *txLocal) Rollback() error {
-	tx.c.activeTransaction = false
+	if tx.c != nil {
+		tx.c.activeTransaction = false
+	}
 	return tx.Tx.Rollback()
+}
+
+type twoPhaseRows struct {
+	driver.Rows
+	tx       *txLocal
+	finished bool
+}
+
+func (r *twoPhaseRows) Next(dest []driver.Value) error {
+	err := r.Rows.Next(dest)
+	if errors.Is(err, io.EOF) {
+		if rows, ok := r.Rows.(driver.RowsNextResultSet); ok && rows.HasNextResultSet() {
+			return io.EOF
+		}
+		return r.finish(true)
+	}
+	if err != nil {
+		return errors.Join(err, r.finish(false))
+	}
+	return nil
+}
+
+func (r *twoPhaseRows) Close() error {
+	if r.finished {
+		return nil
+	}
+	dest := make([]driver.Value, len(r.Rows.Columns()))
+	for {
+		for {
+			err := r.Rows.Next(dest)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return errors.Join(err, r.finish(false))
+			}
+		}
+		rows, ok := r.Rows.(driver.RowsNextResultSet)
+		if !ok || !rows.HasNextResultSet() {
+			err := r.finish(true)
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if err := rows.NextResultSet(); err != nil {
+			return errors.Join(err, r.finish(false))
+		}
+	}
+}
+
+func (r *twoPhaseRows) finish(commit bool) error {
+	if r.finished {
+		return nil
+	}
+	r.finished = true
+	closeErr := r.Rows.Close()
+	if !commit || closeErr != nil {
+		return errors.Join(closeErr, r.tx.Rollback())
+	}
+	if err := r.tx.Commit(); err != nil {
+		return err
+	}
+	return io.EOF
+}
+
+func (r *twoPhaseRows) HasNextResultSet() bool {
+	rows, ok := r.Rows.(driver.RowsNextResultSet)
+	return ok && rows.HasNextResultSet()
+}
+
+func (r *twoPhaseRows) NextResultSet() error {
+	rows, ok := r.Rows.(driver.RowsNextResultSet)
+	if !ok {
+		return io.EOF
+	}
+	if err := rows.NextResultSet(); err != nil {
+		if errors.Is(err, io.EOF) {
+			return r.finish(true)
+		}
+		return errors.Join(err, r.finish(false))
+	}
+	return nil
+}
+
+func (r *twoPhaseRows) ColumnTypeDatabaseTypeName(index int) string {
+	rows, ok := r.Rows.(driver.RowsColumnTypeDatabaseTypeName)
+	if !ok {
+		return ""
+	}
+	return rows.ColumnTypeDatabaseTypeName(index)
+}
+
+func (r *twoPhaseRows) ColumnTypeLength(index int) (int64, bool) {
+	rows, ok := r.Rows.(driver.RowsColumnTypeLength)
+	if !ok {
+		return 0, false
+	}
+	return rows.ColumnTypeLength(index)
+}
+
+func (r *twoPhaseRows) ColumnTypeNullable(index int) (bool, bool) {
+	rows, ok := r.Rows.(driver.RowsColumnTypeNullable)
+	if !ok {
+		return false, false
+	}
+	return rows.ColumnTypeNullable(index)
+}
+
+func (r *twoPhaseRows) ColumnTypePrecisionScale(index int) (int64, int64, bool) {
+	rows, ok := r.Rows.(driver.RowsColumnTypePrecisionScale)
+	if !ok {
+		return 0, 0, false
+	}
+	return rows.ColumnTypePrecisionScale(index)
+}
+
+func (r *twoPhaseRows) ColumnTypeScanType(index int) reflect.Type {
+	rows, ok := r.Rows.(driver.RowsColumnTypeScanType)
+	if !ok {
+		return reflect.TypeOf(new(any)).Elem()
+	}
+	return rows.ColumnTypeScanType(index)
 }
 
 type txProxied struct {

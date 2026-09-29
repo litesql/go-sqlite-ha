@@ -20,10 +20,8 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
 github.com/klauspost/compress v1.20.1/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
-github.com/litesql/go-ha v0.13.14 h1:9uHrOT882MPFq/2Oz/ybzTISx4gWWhuL+LF+xI7dK2Q=
-github.com/litesql/go-ha v0.13.14/go.mod h1:yEV+kgGU4Gj05asSvdl4W4jfww/jAZxupIfeH7O12XE=
-github.com/litesql/go-ha v0.13.16 h1:M1n5PEkK5nqUqOPtBWfxO+O3t9fWHBgYfs789j9FKlQ=
-github.com/litesql/go-ha v0.13.16/go.mod h1:yEV+kgGU4Gj05asSvdl4W4jfww/jAZxupIfeH7O12XE=
+github.com/litesql/go-ha v0.13.17 h1:lUomqQzW6K0b5y7WGi9XUhi0CNWXbwLaJm3vX/zf4bc=
+github.com/litesql/go-ha v0.13.17/go.mod h1:yEV+kgGU4Gj05asSvdl4W4jfww/jAZxupIfeH7O12XE=
 github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/minio/highwayhash v1.0.4 h1:asJizugGgchQod2ja9NJlGOWq4s7KsAWr5XUc9Clgl4=
