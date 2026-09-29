@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"time"
 
 	"github.com/litesql/go-ha"
 	sqliteha "github.com/litesql/go-sqlite-ha"
@@ -32,4 +33,5 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	time.Sleep(500 * time.Millisecond)
 }
