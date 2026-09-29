@@ -14,7 +14,7 @@ import (
 // go run ./_examples/node1
 func main() {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
-	c, err := sqliteha.NewConnector("file:_examples/2pc/my.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&2pcPeers=http://localhost:5001(secret-token)&2pcTimeout=3s",
+	c, err := sqliteha.NewConnector("file:_examples/2pc/my.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&2pcPeers=http://localhost:5001(secret-token)&2pcTimeout=3s&2pcRecoveryPath=_examples/2pc/recovery.db",
 		ha.WithName("node_two_phase_commit"),
 		ha.WithReplicationSubscriber(ha.NewNoopSubscriber()),
 		ha.WithAutoStart(true))
@@ -27,7 +27,7 @@ func main() {
 
 	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS users(name TEXT);
-		INSERT INTO users VALUES('HA user 2PC param');
+		INSERT INTO users VALUES('HA user 2PC');
 	`)
 	if err != nil {
 		panic(err)
