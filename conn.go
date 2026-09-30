@@ -615,7 +615,7 @@ type txLocal struct {
 }
 
 func (tx *txLocal) Commit() error {
-	if tx.c == nil {
+	if tx.c == nil || ha.LocalDB(tx.ctx) {
 		return tx.Tx.Commit()
 	}
 	preparer, ok := tx.c.connector.Publisher().(ha.TwoPhaseCommitPreparer)
