@@ -615,24 +615,24 @@ type txLocal struct {
 }
 
 func (tx *txLocal) Commit() error {
+	if tx.c != nil {
+		tx.c.activeTransaction = false
+	}
 	if tx.c == nil || ha.LocalDB(tx.ctx) {
 		return tx.Tx.Commit()
 	}
 	preparer, ok := tx.c.connector.Publisher().(ha.TwoPhaseCommitPreparer)
 	if !ok {
 		err := tx.Tx.Commit()
-		tx.c.activeTransaction = false
 		return err
 	}
 	cs := snapshotChangeSet(tx.c.SQLiteConn)
 	if cs == nil || len(cs.Changes) == 0 {
 		err := tx.Tx.Commit()
-		tx.c.activeTransaction = false
 		return err
 	}
 	prepared, err := preparer.PrepareTwoPhaseCommit(cs)
 	if err != nil {
-		tx.c.activeTransaction = false
 		return errors.Join(err, tx.Tx.Rollback())
 	}
 	ctx := tx.ctx
@@ -652,11 +652,9 @@ func (tx *txLocal) Commit() error {
 	})
 	if err != nil {
 		abortErr := prepared.Abort()
-		tx.c.activeTransaction = false
 		return errors.Join(err, abortErr, tx.Tx.Rollback())
 	}
 	if err := tx.Tx.Commit(); err != nil {
-		tx.c.activeTransaction = false
 		_ = tx.Tx.Rollback()
 		committed, resolveErr := prepared.ResolveCommit()
 		if committed {
@@ -669,7 +667,6 @@ func (tx *txLocal) Commit() error {
 		}
 		return errors.Join(err, resolveErr)
 	}
-	tx.c.activeTransaction = false
 	clearChangeSet(tx.c.SQLiteConn)
 	commitErr := prepared.Commit()
 	publishChangeSetCDC(tx.c.connector, cs)
