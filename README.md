@@ -89,6 +89,17 @@ metrics are emitted through OpenTelemetry; they are not added to `go-ha`'s stand
 Prometheus `/metrics` registry. To scrape them with Prometheus, configure an
 OpenTelemetry Prometheus exporter in the application.
 
+### Resilience tests
+
+The integration resilience tests start an in-process JetStream server and use temporary SQLite databases; they do not require external NATS or Docker:
+
+```bash
+go test ./... -run '^TestResilience' -count=1
+```
+
+They cover leader failover, NATS server interruption and reconnection, duplicate publication deduplication, node restart, and replay of changesets published while a subscriber is offline.
+
+
 ## Projects using go-sqlite-ha
 
 - [HA](https://github.com/litesql/ha): Highly available leaderless SQLite cluster with HTTP and PostgreSQL Wire Protocol
