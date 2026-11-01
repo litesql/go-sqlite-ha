@@ -15,7 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	_ "github.com/litesql/go-ha"
+	_ "github.com/litesql/go-sqlite-ha"
 )
 
 type resilienceHooks struct{}
@@ -252,7 +252,7 @@ func TestResilienceNATSDisconnectAndReconnect(t *testing.T) {
 		t.Fatal("NATS client did not reconnect")
 	}
 
-	if err := publisher.Publish(resilienceChangeSet("resilience_disconnect", 1)); err != nil {
+	if err := publisher.Publish(context.TODO(), resilienceChangeSet("resilience_disconnect", 1)); err != nil {
 		t.Fatalf("publish after NATS reconnect: %v", err)
 	}
 	waitForSequence(t, node.subscriber, 1)
@@ -283,7 +283,7 @@ func TestResilienceDuplicateMessagesAreDeduplicated(t *testing.T) {
 		"node-a", "node-a", stream, subject)
 	changeset := resilienceChangeSet(stream, 7)
 	for range 2 {
-		if err := publisher.Publish(changeset); err != nil {
+		if err := publisher.Publish(context.TODO(), changeset); err != nil {
 			t.Fatalf("publish duplicate changeset: %v", err)
 		}
 	}
@@ -330,7 +330,7 @@ func TestResilienceNodeRestartAndOfflineRecovery(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "node.db")
 	node := newResilienceNode(t, nc, dbPath, "node-a", "node-a", stream, subject)
 
-	if err := publisher.Publish(resilienceChangeSet(stream, 1)); err != nil {
+	if err := publisher.Publish(context.TODO(), resilienceChangeSet(stream, 1)); err != nil {
 		t.Fatalf("publish before node restart: %v", err)
 	}
 	waitForSequence(t, node.subscriber, 1)
@@ -343,7 +343,7 @@ func TestResilienceNodeRestartAndOfflineRecovery(t *testing.T) {
 	if got := restarted.subscriber.LatestSeq(); got != 1 {
 		t.Fatalf("restarted subscriber sequence = %d, want persisted sequence 1", got)
 	}
-	if err := publisher.Publish(resilienceChangeSet(stream, 2)); err != nil {
+	if err := publisher.Publish(context.TODO(), resilienceChangeSet(stream, 2)); err != nil {
 		t.Fatalf("publish after node restart: %v", err)
 	}
 	waitForSequence(t, restarted.subscriber, 2)
@@ -353,7 +353,7 @@ func TestResilienceNodeRestartAndOfflineRecovery(t *testing.T) {
 		t.Fatalf("close node database before offline interval: %v", err)
 	}
 	for id := 3; id <= 5; id++ {
-		if err := publisher.Publish(resilienceChangeSet(stream, id)); err != nil {
+		if err := publisher.Publish(context.TODO(), resilienceChangeSet(stream, id)); err != nil {
 			t.Fatalf("publish message %d while node is offline: %v", id, err)
 		}
 	}

@@ -70,6 +70,25 @@ func main() {
 
 [See options available](https://github.com/litesql/go-ha?tab=readme-ov-file#configuration-options)
 
+## Observability
+
+`go-sqlite-ha` adds OpenTelemetry metrics and traces for SQL operations, transaction
+operations (including two-phase commit stages), and backups. It does not record SQL
+text or parameter values. Metrics are `go_sqlite_ha.db.operations`,
+`go_sqlite_ha.db.operation.duration`, and `go_sqlite_ha.backup.size`. They use
+bounded operation and route attributes (`local`, `local_2pc`, `two_phase_commit`,
+`leader_grpc`, `proxied_db`, or `cross_shard`) plus success/error/cancelled result.
+Spans use the `go_sqlite_ha.db.*` names and `go_sqlite_ha.backup`.
+
+The driver uses the global OpenTelemetry meter and tracer providers. Configure the
+global providers before opening the connector. To enable the `go-ha` cluster and
+replication telemetry with those same providers, pass `ha.WithOpenTelemetry(nil, nil)` or `otel=true`
+when creating the connector. The `/healthz`, `/readyz`, and `/metrics` handlers
+provided by `go-ha` remain the cluster-level observability endpoints. The driver's
+metrics are emitted through OpenTelemetry; they are not added to `go-ha`'s standalone
+Prometheus `/metrics` registry. To scrape them with Prometheus, configure an
+OpenTelemetry Prometheus exporter in the application.
+
 ## Projects using go-sqlite-ha
 
 - [HA](https://github.com/litesql/ha): Highly available leaderless SQLite cluster with HTTP and PostgreSQL Wire Protocol
