@@ -3,7 +3,7 @@ module github.com/litesql/go-sqlite-ha
 go 1.26.0
 
 require (
-	github.com/litesql/go-ha v0.15.3
+	github.com/litesql/go-ha v0.15.5
 	github.com/nats-io/nats-server/v2 v2.15.2
 	github.com/nats-io/nats.go v1.55.0
 	go.opentelemetry.io/otel v1.47.0
@@ -14,8 +14,6 @@ require (
 	google.golang.org/grpc v1.85.0
 	modernc.org/sqlite v1.61.1
 )
-
-replace github.com/litesql/go-ha => ../go-ha
 
 require (
 	connectrpc.com/connect v1.21.1 // indirect
