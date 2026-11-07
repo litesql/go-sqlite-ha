@@ -12,6 +12,13 @@ import (
 	"modernc.org/sqlite"
 )
 
+var ErrTimedOut = ha.ErrTimedOut
+
+type (
+	Conn                 = ha.Conn
+	ProxiedQuerierExecer = ha.ProxiedQuerierExecer
+)
+
 func init() {
 	sql.Register("sqlite-ha", &Driver{})
 }
@@ -49,7 +56,7 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 		}
 	})
 	return ha.NewConnector(dsn, drv, func() ha.ConnHooksProvider {
-		return &connHooksProvider{}
+		return ha.NewSQLiteHooksProvider(&hooksAdapter{})
 	}, Backup, opts...)
 }
 
@@ -64,7 +71,6 @@ func NewConnector(name string, opts ...ha.Option) (*ha.Connector, error) {
 		drv = driver.(*sqlite.Driver)
 	}
 	return ha.NewConnector(dsn, drv, func() ha.ConnHooksProvider {
-		return &connHooksProvider{}
+		return ha.NewSQLiteHooksProvider(&hooksAdapter{})
 	}, Backup, opts...)
-
 }

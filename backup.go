@@ -5,79 +5,35 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"os"
+
+	"github.com/litesql/go-ha"
 )
 
-func Backup(ctx context.Context, db *sql.DB, w io.Writer) (retErr error) {
-	telemetry, err := defaultSQLiteTelemetry()
-	if err != nil {
-		return fmt.Errorf("initialize SQLite telemetry: %w", err)
-	}
-	ctx, finish := telemetry.startBackup(ctx)
-	var written int64
-	defer func() { finish(retErr, written) }()
+func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
+	return ha.BackupWithAdapter(
+		ctx,
+		db,
+		w,
+		func(sqliteSrcConn SQLiteConn) ([]byte, error) {
+			return sqliteSrcConn.Serialize()
+		},
+		func(_ context.Context, sqliteSrcConn SQLiteConn, destName string) error {
+			bkp, err := sqliteSrcConn.NewBackup(destName)
+			if err != nil {
+				return err
+			}
 
-	srcConn, err := db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer srcConn.Close()
+			for more := true; more; {
+				more, err = bkp.Step(-1)
+				if err != nil {
+					return fmt.Errorf("backup step error: %w", err)
+				}
+			}
 
-	sqliteSrcConn, err := sqliteConn(srcConn)
-	if err != nil {
-		return err
-	}
-
-	var filename string
-	err = srcConn.QueryRowContext(ctx, "SELECT file FROM pragma_database_list WHERE name = ?", "main").Scan(&filename)
-	if err != nil {
-		return err
-	}
-
-	if filename == "" {
-		// serialize memdb
-		data, err := sqliteSrcConn.Serialize()
-		if err != nil {
-			return err
-		}
-		n, writeErr := w.Write(data)
-		written = int64(n)
-		if writeErr == nil && n != len(data) {
-			writeErr = io.ErrShortWrite
-		}
-		err = writeErr
-		return err
-	}
-
-	dest, err := os.CreateTemp("", "ha-*.db")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(dest.Name())
-
-	bkp, err := sqliteSrcConn.NewBackup(dest.Name())
-	if err != nil {
-		return err
-	}
-
-	for more := true; more; {
-		more, err = bkp.Step(-1)
-		if err != nil {
-			return fmt.Errorf("backup step error: %w", err)
-		}
-	}
-
-	err = bkp.Finish()
-	if err != nil {
-		return fmt.Errorf("backup finish error: %w", err)
-	}
-
-	final, err := os.Open(dest.Name())
-	if err != nil {
-		return err
-	}
-	defer final.Close()
-
-	written, err = io.Copy(w, final)
-	return err
+			if err := bkp.Finish(); err != nil {
+				return fmt.Errorf("backup finish error: %w", err)
+			}
+			return nil
+		},
+	)
 }
